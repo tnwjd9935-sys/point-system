@@ -1,0 +1,73 @@
+### 변수 (IntelliJ: Run Configuration에서 오버라이드 가능)
+@host = http://localhost:8080
+
+### 적립 - 기본
+POST {{host}}/api/points/earn
+Content-Type: application/json
+
+{
+  "userId": "1234567890",
+  "amount": 500,
+  "requestId": "http-req-1"
+}
+
+### 적립 - 멱등 재요청 (위와 동일 requestId → 중복 적립 없음)
+POST {{host}}/api/points/earn
+Content-Type: application/json
+
+{
+  "userId": "1234567890",
+  "amount": 500,
+  "requestId": "http-req-1"
+}
+
+### 적립 - 만료일·수기 지급
+POST {{host}}/api/points/earn
+Content-Type: application/json
+
+{
+  "userId": "1111111111",
+  "amount": 1000,
+  "expireYmd": "20261231",
+  "requestId": "http-req-2",
+  "manualYn": "Y"
+}
+
+### 적립 - 다른 사용자
+POST {{host}}/api/points/earn
+Content-Type: application/json
+
+{
+  "userId": "9999999999",
+  "amount": 300,
+  "requestId": "http-req-3"
+}
+
+### 검증 실패 - amount 범위 밖 (400 예상)
+POST {{host}}/api/points/earn
+Content-Type: application/json
+
+{
+  "userId": "1234567890",
+  "amount": 0,
+  "requestId": "http-req-bad-1"
+}
+
+### 검증 실패 - userId 10자리 아님 (400 예상)
+POST {{host}}/api/points/earn
+Content-Type: application/json
+
+{
+  "userId": "12345",
+  "amount": 100,
+  "requestId": "http-req-bad-2"
+}
+
+### 검증 실패 - requestId 없음 (400 예상)
+POST {{host}}/api/points/earn
+Content-Type: application/json
+
+{
+  "userId": "1234567890",
+  "amount": 100
+}

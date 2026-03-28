@@ -11,19 +11,20 @@ spring:
     username: sa
     password:
 
-  jpa:
-    hibernate:
-      ddl-auto: create
-    open-in-view: false
-    properties:
-      hibernate:
-        format_sql: true
+  sql:
+    init:
+      mode: always
 
   h2:
     console:
       enabled: true
       path: /h2-console
 
-logging:
-  level:
-    org.hibernate.SQL: debug
+point:
+  policy:
+    min-earn-amount: 1
+    max-earn-amount: 100000
+    max-balance-amount: 1000000
+    default-expire-days: 365
+    min-expire-days-from-today: 1
+    max-expire-years-from-today: 5

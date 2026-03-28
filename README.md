@@ -3,7 +3,7 @@
 
 ## 기술 스택
 - Java 21
-- Spring Boot 3.x
+- Spring Boot 3.4.3
 - Gradle
 - H2 Database
 
