@@ -6,19 +6,20 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 
+// 거래 한 건의 세부 흐름 (POINT_DETAIL)
 @Getter
 @Setter
 @NoArgsConstructor
 public class PointDetail {
 
-    private Long detailId;
+    private Long detailId; // 내역 PK
     private String userId;
     private String pointKey;
-    private TradeType tradeType;
-    private String sourcePointKey;
-    private String targetPointKey;
-    private Long amount;
-    private String orderNo;
+    private TradeType tradeType; //거래 타입 (적립 / 사용 / 취소)
+    private String sourcePointKey; // 사용 시 차감된 포인트키
+    private String targetPointKey; // 사용/취소 후 영향을 받은 대상 포인트키
+    private Long amount; // 포인트
+    private String orderNo; // 주문번호
     private LocalDateTime createdAt;
 
     public PointDetail(

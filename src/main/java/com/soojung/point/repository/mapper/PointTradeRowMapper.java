@@ -9,6 +9,7 @@ import java.sql.SQLException;
 import java.time.LocalDateTime;
 import org.springframework.jdbc.core.RowMapper;
 
+// POINT_TRADE 한 행 → PointTrade (enum은 문자열로 저장됨)
 public class PointTradeRowMapper implements RowMapper<PointTrade> {
 
     @Override
@@ -25,7 +26,7 @@ public class PointTradeRowMapper implements RowMapper<PointTrade> {
         row.setExpireYmd(rs.getString("expire_ymd"));
         row.setStatus(PointStatus.valueOf(rs.getString("status")));
         row.setRequestId(rs.getString("request_id"));
-        row.setManualYn(rs.getString("manual_yn"));
+        row.setAdminGrantedYn(rs.getString("admin_granted_yn"));
         row.setCreatedAt(rs.getObject("created_at", LocalDateTime.class));
         row.setUpdatedAt(rs.getObject("updated_at", LocalDateTime.class));
         return row;

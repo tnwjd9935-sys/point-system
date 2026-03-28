@@ -1,4 +1,3 @@
-### 변수 (IntelliJ: Run Configuration에서 오버라이드 가능)
 @host = http://localhost:8080
 
 ### 적립 - 기본
@@ -11,7 +10,7 @@ Content-Type: application/json
   "requestId": "http-req-1"
 }
 
-### 적립 - 멱등 재요청 (위와 동일 requestId → 중복 적립 없음)
+### 적립 -  동일 requestId → 중복 적립 없음
 POST {{host}}/api/points/earn
 Content-Type: application/json
 
@@ -30,7 +29,7 @@ Content-Type: application/json
   "amount": 1000,
   "expireYmd": "20261231",
   "requestId": "http-req-2",
-  "manualYn": "Y"
+  "adminGrantedYn": "Y"
 }
 
 ### 적립 - 다른 사용자

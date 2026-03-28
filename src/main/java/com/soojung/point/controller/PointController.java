@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+// 포인트 API
 @RestController
 @RequestMapping("/api/points")
 public class PointController {
@@ -22,11 +23,13 @@ public class PointController {
         this.pointService = pointService;
     }
 
+    // 적립 API
     @PostMapping("/earn")
     public EarnPointResponse earn(@RequestBody EarnPointRequest request) {
         return pointService.earn(request);
     }
 
+    // 검증 실패
     @ExceptionHandler({IllegalArgumentException.class, IllegalStateException.class})
     public ResponseEntity<Map<String, String>> handleBadRequest(RuntimeException ex) {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of("message", ex.getMessage()));

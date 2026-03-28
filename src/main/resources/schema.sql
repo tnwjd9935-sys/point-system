@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS POINT_TRADE (
     expire_ymd VARCHAR(8),
     status VARCHAR(20) NOT NULL,
     request_id VARCHAR(128) NOT NULL,
-    manual_yn VARCHAR(1),
+    admin_granted_yn VARCHAR(1),
     created_at TIMESTAMP NOT NULL,
     updated_at TIMESTAMP NOT NULL,
     CHECK (amount > 0 AND remain_amount >= 0),

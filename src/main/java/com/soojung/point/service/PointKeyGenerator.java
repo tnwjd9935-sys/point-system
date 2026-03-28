@@ -4,14 +4,15 @@ import com.soojung.point.repository.PointTradeRepository;
 import java.security.SecureRandom;
 import org.springframework.stereotype.Component;
 
+// point_key 5자리 발급. DB에 없을 때까지 몇 번 재시도
 @Component
 public class PointKeyGenerator {
 
-    private static final char[] ALPHANUM = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789".toCharArray();
+    private static final char[] ALPHANUM = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789".toCharArray(); // 헷갈리는 0/O 등 제외
     private static final int LENGTH = 5;
 
-    private final SecureRandom random = new SecureRandom();
-    private final PointTradeRepository pointTradeRepository;
+    private final SecureRandom random = new SecureRandom(); // 키 예측 어렵게
+    private final PointTradeRepository pointTradeRepository; // 중복 여부만 조회
 
     public PointKeyGenerator(PointTradeRepository pointTradeRepository) {
         this.pointTradeRepository = pointTradeRepository;

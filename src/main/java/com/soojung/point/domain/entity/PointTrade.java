@@ -8,6 +8,7 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 
+// 포인트 거래 원장 한 건 (POINT_TRADE)
 @Getter
 @Setter
 @NoArgsConstructor
@@ -15,16 +16,16 @@ public class PointTrade {
 
     private String pointKey;
     private String userId;
-    private TradeType tradeType;
-    private Long amount;
-    private Long remainAmount;
-    private String orderNo;
-    private String originalPointKey;
-    private ExpireYn expireYn;
-    private String expireYmd;
-    private PointStatus status;
-    private String requestId;
-    private String manualYn;
+    private TradeType tradeType; //거래 타입 (적립 / 사용 / 취소)
+    private Long amount; // 포인트 금액
+    private Long remainAmount; // 적립 포인트의 남은금액
+    private String orderNo; // 주문번호
+    private String originalPointKey; // 원 거래 키
+    private ExpireYn expireYn; // 만료 대상 여부
+    private String expireYmd; // 만료일 yyyyMMdd
+    private PointStatus status; // 거래상태
+    private String requestId; // 요청 유니크한 키 (클라이언트가 생성)
+    private String adminGrantedYn; // 관리자 수기 지급 여부 Y/N/null
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 

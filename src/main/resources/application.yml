@@ -20,6 +20,11 @@ spring:
       enabled: true
       path: /h2-console
 
+logging:
+  level:
+    root: INFO
+    com.soojung.point: DEBUG
+
 point:
   policy:
     min-earn-amount: 1

@@ -6,6 +6,7 @@ import java.sql.SQLException;
 import java.time.LocalDateTime;
 import org.springframework.jdbc.core.RowMapper;
 
+// USER_BALANCE 한 행 → UserBalance
 public class UserBalanceRowMapper implements RowMapper<UserBalance> {
 
     @Override

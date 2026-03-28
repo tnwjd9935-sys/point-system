@@ -11,6 +11,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.stereotype.Repository;
 
+// POINT_DETAIL 테이블 전용 JdbcTemplate 접근
 @Repository
 public class PointDetailRepository {
 
@@ -21,6 +22,7 @@ public class PointDetailRepository {
         this.jdbcTemplate = jdbcTemplate;
     }
 
+    // insert 후 생성된 detail_id를 엔티티에 세팅
     public PointDetail insertPointDetail(PointDetail entity) {
         if (entity.getCreatedAt() == null) {
             entity.onBeforeInsert();
@@ -31,9 +33,18 @@ public class PointDetailRepository {
                     PreparedStatement ps = connection.prepareStatement(
                             """
                             INSERT INTO POINT_DETAIL (
-                                user_id, point_key, trade_type,
-                                source_point_key, target_point_key, amount, order_no, created_at
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                user_id,
+                                point_key,
+                                trade_type,
+                                source_point_key,
+                                target_point_key,
+                                amount,
+                                order_no,
+                                created_at
+                            )
+                            VALUES (
+                                ?, ?, ?, ?, ?, ?, ?, ?
+                            )
                             """,
                             Statement.RETURN_GENERATED_KEYS);
                     ps.setString(1, entity.getUserId());

@@ -7,6 +7,7 @@ import java.util.Optional;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
+// POINT_TRADE 테이블 전용 JdbcTemplate 접근
 @Repository
 public class PointTradeRepository {
 
@@ -24,12 +25,24 @@ public class PointTradeRepository {
         jdbcTemplate.update(
                 """
                 INSERT INTO POINT_TRADE (
-                    point_key, user_id, trade_type, amount, remain_amount,
-                    order_no, original_point_key, expire_yn, expire_ymd, status,
-                    request_id, manual_yn,
-                    created_at, updated_at
+                    point_key,
+                    user_id,
+                    trade_type,
+                    amount,
+                    remain_amount,
+                    order_no,
+                    original_point_key,
+                    expire_yn,
+                    expire_ymd,
+                    status,
+                    request_id,
+                    admin_granted_yn,
+                    created_at,
+                    updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                )
                 """,
                 entity.getPointKey(),
                 entity.getUserId(),
@@ -42,7 +55,7 @@ public class PointTradeRepository {
                 entity.getExpireYmd(),
                 entity.getStatus().name(),
                 entity.getRequestId(),
-                entity.getManualYn(),
+                entity.getAdminGrantedYn(),
                 entity.getCreatedAt(),
                 entity.getUpdatedAt());
     }
@@ -61,7 +74,7 @@ public class PointTradeRepository {
                     expire_yn = ?,
                     expire_ymd = ?,
                     status = ?,
-                    manual_yn = ?,
+                    admin_granted_yn = ?,
                     updated_at = ?
                 WHERE point_key = ?
                 """,
@@ -74,7 +87,7 @@ public class PointTradeRepository {
                 entity.getExpireYn().name(),
                 entity.getExpireYmd(),
                 entity.getStatus().name(),
-                entity.getManualYn(),
+                entity.getAdminGrantedYn(),
                 entity.getUpdatedAt(),
                 entity.getPointKey());
     }
@@ -87,6 +100,7 @@ public class PointTradeRepository {
         return rows.isEmpty() ? Optional.empty() : Optional.of(rows.getFirst());
     }
 
+    //request_id
     public Optional<PointTrade> selectPointTradeByRequestId(String requestId) {
         List<PointTrade> rows = jdbcTemplate.query(
                 "SELECT * FROM POINT_TRADE WHERE request_id = ?",
