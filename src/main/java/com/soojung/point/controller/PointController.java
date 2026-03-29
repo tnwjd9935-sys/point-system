@@ -1,5 +1,7 @@
 package com.soojung.point.controller;
 
+import com.soojung.point.dto.CancelUsePointRequest;
+import com.soojung.point.dto.CancelUsePointResponse;
 import com.soojung.point.dto.EarnPointRequest;
 import com.soojung.point.dto.EarnPointResponse;
 import com.soojung.point.dto.UsePointRequest;
@@ -35,6 +37,12 @@ public class PointController {
     @PostMapping("/use")
     public UsePointResponse use(@RequestBody UsePointRequest request) {
         return pointService.use(request);
+    }
+
+    // 사용취소 API
+    @PostMapping("/use/cancel")
+    public CancelUsePointResponse cancelUse(@RequestBody CancelUsePointRequest request) {
+        return pointService.cancelUse(request);
     }
 
     // 검증 실패

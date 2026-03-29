@@ -1,6 +1,6 @@
 package com.soojung.point.domain.enums;
 
-// 거래 유형 코드(과제 스펙과 동일)
+// 거래 유형 코드
 public enum TradeType {
     PO01, // 적립
     PO02, // 사용

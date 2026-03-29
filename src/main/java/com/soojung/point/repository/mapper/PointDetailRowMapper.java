@@ -7,7 +7,7 @@ import java.sql.SQLException;
 import java.time.LocalDateTime;
 import org.springframework.jdbc.core.RowMapper;
 
-// POINT_DETAIL 한 행 → PointDetail
+// POINT_DETAIL
 public class PointDetailRowMapper implements RowMapper<PointDetail> {
 
     @Override

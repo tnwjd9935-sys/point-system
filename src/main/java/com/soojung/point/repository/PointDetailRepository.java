@@ -1,6 +1,7 @@
 package com.soojung.point.repository;
 
 import com.soojung.point.domain.entity.PointDetail;
+import com.soojung.point.domain.enums.TradeType;
 import com.soojung.point.repository.mapper.PointDetailRowMapper;
 import java.sql.PreparedStatement;
 import java.sql.Statement;
@@ -118,6 +119,22 @@ public class PointDetailRepository {
                 "SELECT * FROM POINT_DETAIL WHERE point_key = ? ORDER BY detail_id",
                 ROW_MAPPER,
                 pointKey);
+    }
+
+    /** 사용(PO02) 건의 차감 상세 (취소 시 복원 집계) */
+    public List<PointDetail> selectDetailsForUse(String usePointKey) {
+        queryLog.debug("SELECT POINT_DETAIL usePointKey={}, tradeType=PO02", usePointKey);
+        return jdbcTemplate.query(
+                """
+                SELECT *
+                FROM POINT_DETAIL
+                WHERE point_key = ?
+                  AND trade_type = ?
+                ORDER BY detail_id
+                """,
+                ROW_MAPPER,
+                usePointKey,
+                TradeType.PO02.name());
     }
 
     public List<PointDetail> selectPointDetailsByUserId(String userId) {

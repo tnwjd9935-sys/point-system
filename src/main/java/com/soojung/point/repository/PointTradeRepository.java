@@ -1,7 +1,9 @@
 package com.soojung.point.repository;
 
 import com.soojung.point.domain.entity.PointTrade;
+import com.soojung.point.domain.enums.PointStatus;
 import com.soojung.point.repository.mapper.PointTradeRowMapper;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 import org.slf4j.Logger;
@@ -22,7 +24,7 @@ public class PointTradeRepository {
         this.jdbcTemplate = jdbcTemplate;
     }
 
-    public void insertPointTrade(PointTrade entity) {
+    public void save(PointTrade entity) {
         if (entity.getCreatedAt() == null) {
             entity.onBeforeInsert();
         }
@@ -64,7 +66,7 @@ public class PointTradeRepository {
                 entity.getOriginalPointKey(),
                 entity.getExpireYn().name(),
                 entity.getExpireYmd(),
-                entity.getStatus().name(),
+                entity.getStatus().getCode(),
                 entity.getRequestId(),
                 entity.getAdminGrantedYn(),
                 entity.getCreatedAt(),
@@ -101,15 +103,30 @@ public class PointTradeRepository {
                 entity.getOriginalPointKey(),
                 entity.getExpireYn().name(),
                 entity.getExpireYmd(),
-                entity.getStatus().name(),
+                entity.getStatus().getCode(),
                 entity.getAdminGrantedYn(),
                 entity.getUpdatedAt(),
                 entity.getPointKey());
     }
 
-    // 신규 거래 저장 (INSERT)
-    public void save(PointTrade trade) {
-        insertPointTrade(trade);
+    /** status·updated_at 만 갱신 (전액 UPDATE 회피) */
+    public int updateTradeStatus(String pointKey, PointStatus status) {
+        LocalDateTime now = LocalDateTime.now();
+        queryLog.debug("UPDATE POINT_TRADE status pointKey={}, status={}", pointKey, status.getCode());
+        return jdbcTemplate.update(
+                """
+                UPDATE POINT_TRADE SET
+                    status = ?,
+                    updated_at = ?
+                WHERE point_key = ?
+                """,
+                status.getCode(),
+                now,
+                pointKey);
+    }
+
+    public void insertPointTrade(PointTrade trade) {
+        save(trade);
     }
 
     // 잔여 포인트만 갱신 (사용 차감 등)
@@ -154,14 +171,15 @@ public class PointTradeRepository {
                 WHERE user_id = ?
                   AND trade_type IN ('PO01', 'PO05')
                   AND remain_amount > 0
-                  AND status = 'ACTIVE'
+                  AND status = ?
                 ORDER BY
                     CASE WHEN admin_granted_yn = 'Y' THEN 0 ELSE 1 END,
                     expire_ymd ASC NULLS LAST,
                     created_at ASC
                 """,
                 ROW_MAPPER,
-                userId);
+                userId,
+                PointStatus.PS01.getCode());
     }
 
     public Optional<PointTrade> selectPointTradeByPointKey(String pointKey) {
