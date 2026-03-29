@@ -17,4 +17,7 @@ public class CancelUsePointRequest {
 
     // 사용(PO02) 건을 찾을 때 쓰는 요청 ID
     private String originRequestId;
+
+    // 이번에 취소할 금액 (부분취소)
+    private Long amount;
 }

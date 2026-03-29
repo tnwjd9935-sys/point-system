@@ -67,7 +67,8 @@ class PointCancelUseTest {
                                 {
                                   "userId": "%s",
                                   "requestId": "cancel-req-1",
-                                  "originRequestId": "use-for-cancel-1"
+                                  "originRequestId": "use-for-cancel-1",
+                                  "amount": 400
                                 }
                                 """
                                         .formatted(userId)))
@@ -113,7 +114,8 @@ class PointCancelUseTest {
                 {
                   "userId": "%s",
                   "requestId": "cancel-idem-1",
-                  "originRequestId": "use-for-cancel-2"
+                  "originRequestId": "use-for-cancel-2",
+                  "amount": 200
                 }
                 """
                         .formatted(userId);
@@ -147,7 +149,8 @@ class PointCancelUseTest {
                                 {
                                   "userId": "6666666666",
                                   "requestId": "cancel-no-origin",
-                                  "originRequestId": "no-such-use"
+                                  "originRequestId": "no-such-use",
+                                  "amount": 1
                                 }
                                 """))
                 .andExpect(status().isBadRequest())
@@ -177,7 +180,8 @@ class PointCancelUseTest {
                                 {
                                   "userId": "%s",
                                   "requestId": "cancel-wrong-type",
-                                  "originRequestId": "earn-as-origin"
+                                  "originRequestId": "earn-as-origin",
+                                  "amount": 1
                                 }
                                 """
                                         .formatted(userId)))
@@ -222,7 +226,8 @@ class PointCancelUseTest {
                                 {
                                   "userId": "8888888889",
                                   "requestId": "cancel-bad-user",
-                                  "originRequestId": "use-cancel-user"
+                                  "originRequestId": "use-cancel-user",
+                                  "amount": 100
                                 }
                                 """))
                 .andExpect(status().isBadRequest())
@@ -266,7 +271,8 @@ class PointCancelUseTest {
                                 {
                                   "userId": "%s",
                                   "requestId": "cancel-first",
-                                  "originRequestId": "use-double-cancel"
+                                  "originRequestId": "use-double-cancel",
+                                  "amount": 150
                                 }
                                 """
                                         .formatted(userId)))
@@ -279,12 +285,13 @@ class PointCancelUseTest {
                                 {
                                   "userId": "%s",
                                   "requestId": "cancel-second",
-                                  "originRequestId": "use-double-cancel"
+                                  "originRequestId": "use-double-cancel",
+                                  "amount": 1
                                 }
                                 """
                                         .formatted(userId)))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.message").value("이미 취소되었거나 취소할 수 없는 사용 거래입니다."));
+                .andExpect(jsonPath("$.message").value("이미 전액 취소된 사용 거래입니다."));
     }
 
     @Test
@@ -308,7 +315,8 @@ class PointCancelUseTest {
                                 {
                                   "userId": "1313131313",
                                   "requestId": "earn-conflict-req",
-                                  "originRequestId": "anything"
+                                  "originRequestId": "anything",
+                                  "amount": 1
                                 }
                                 """))
                 .andExpect(status().isBadRequest())
@@ -357,11 +365,325 @@ class PointCancelUseTest {
                                 {
                                   "userId": "%s",
                                   "requestId": "cancel-detail-mismatch",
-                                  "originRequestId": "use-detail-mismatch"
+                                  "originRequestId": "use-detail-mismatch",
+                                  "amount": 250
                                 }
                                 """
                                         .formatted(userId)))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.message").value("사용 상세와 원 거래 금액이 일치하지 않습니다. 운영 확인이 필요합니다."));
+    }
+
+    @Test
+    void partial_cancel_1100_after_use_1200_restores_fifo_across_two_sources() throws Exception {
+        String userId = "2020202020";
+        mockMvc.perform(post("/api/points/earn")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(
+                                """
+                                {"userId": "%s", "amount": 1000, "requestId": "earn-pc-a"}
+                                """
+                                        .formatted(userId)))
+                .andExpect(status().isOk());
+        mockMvc.perform(post("/api/points/earn")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(
+                                """
+                                {"userId": "%s", "amount": 200, "requestId": "earn-pc-b"}
+                                """
+                                        .formatted(userId)))
+                .andExpect(status().isOk());
+
+        MvcResult useRes = mockMvc.perform(post("/api/points/use")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(
+                                """
+                                {
+                                  "userId": "%s",
+                                  "orderNo": "ORD-PC",
+                                  "amount": 1200,
+                                  "requestId": "use-partial-1200"
+                                }
+                                """
+                                        .formatted(userId)))
+                .andExpect(status().isOk())
+                .andReturn();
+        String usePk =
+                objectMapper.readTree(useRes.getResponse().getContentAsString()).get("pointKey").asText();
+
+        mockMvc.perform(post("/api/points/use/cancel")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(
+                                """
+                                {
+                                  "userId": "%s",
+                                  "requestId": "cancel-pc-1100",
+                                  "originRequestId": "use-partial-1200",
+                                  "amount": 1100
+                                }
+                                """
+                                        .formatted(userId)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.canceledAmount").value(1100));
+
+        Long remain =
+                jdbcTemplate.queryForObject(
+                        "SELECT remain_amount FROM POINT_TRADE WHERE point_key = ?", Long.class, usePk);
+        assertThat(remain).isEqualTo(100L);
+    }
+
+    @Test
+    void partial_cancel_reduces_po02_remain_amount() throws Exception {
+        String userId = "2121212121";
+        mockMvc.perform(post("/api/points/earn")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(
+                                """
+                                {"userId": "%s", "amount": 500, "requestId": "earn-rem"}
+                                """
+                                        .formatted(userId)))
+                .andExpect(status().isOk());
+        MvcResult useRes = mockMvc.perform(post("/api/points/use")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(
+                                """
+                                {
+                                  "userId": "%s",
+                                  "orderNo": "ORD-RM",
+                                  "amount": 500,
+                                  "requestId": "use-rem-500"
+                                }
+                                """
+                                        .formatted(userId)))
+                .andExpect(status().isOk())
+                .andReturn();
+        String usePk =
+                objectMapper.readTree(useRes.getResponse().getContentAsString()).get("pointKey").asText();
+
+        assertThat(jdbcTemplate.queryForObject(
+                        "SELECT remain_amount FROM POINT_TRADE WHERE point_key = ?", Long.class, usePk))
+                .isEqualTo(500L);
+
+        mockMvc.perform(post("/api/points/use/cancel")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(
+                                """
+                                {
+                                  "userId": "%s",
+                                  "requestId": "cancel-rem-200",
+                                  "originRequestId": "use-rem-500",
+                                  "amount": 200
+                                }
+                                """
+                                        .formatted(userId)))
+                .andExpect(status().isOk());
+
+        assertThat(jdbcTemplate.queryForObject(
+                        "SELECT remain_amount FROM POINT_TRADE WHERE point_key = ?", Long.class, usePk))
+                .isEqualTo(300L);
+    }
+
+    @Test
+    void repeated_partial_cancel_cannot_exceed_remaining_cancelable_amount() throws Exception {
+        String userId = "2222222220";
+        mockMvc.perform(post("/api/points/earn")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(
+                                """
+                                {"userId": "%s", "amount": 800, "requestId": "earn-rpt"}
+                                """
+                                        .formatted(userId)))
+                .andExpect(status().isOk());
+        mockMvc.perform(post("/api/points/use")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(
+                                """
+                                {
+                                  "userId": "%s",
+                                  "orderNo": "ORD-RPT",
+                                  "amount": 800,
+                                  "requestId": "use-rpt-800"
+                                }
+                                """
+                                        .formatted(userId)))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(post("/api/points/use/cancel")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(
+                                """
+                                {
+                                  "userId": "%s",
+                                  "requestId": "cancel-rpt-1",
+                                  "originRequestId": "use-rpt-800",
+                                  "amount": 500
+                                }
+                                """
+                                        .formatted(userId)))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(post("/api/points/use/cancel")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(
+                                """
+                                {
+                                  "userId": "%s",
+                                  "requestId": "cancel-rpt-2",
+                                  "originRequestId": "use-rpt-800",
+                                  "amount": 400
+                                }
+                                """
+                                        .formatted(userId)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("남은 취소 가능 금액보다 큰 금액을 취소할 수 없습니다."));
+    }
+
+    @Test
+    void partial_cancel_restores_non_expired_earn_remain() throws Exception {
+        String userId = "2323232323";
+        MvcResult earnRes = mockMvc.perform(post("/api/points/earn")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(
+                                """
+                                {"userId": "%s", "amount": 300, "requestId": "earn-nexp"}
+                                """
+                                        .formatted(userId)))
+                .andExpect(status().isOk())
+                .andReturn();
+        String earnPk = objectMapper.readTree(earnRes.getResponse().getContentAsString()).get("pointKey").asText();
+
+        mockMvc.perform(post("/api/points/use")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(
+                                """
+                                {
+                                  "userId": "%s",
+                                  "orderNo": "ORD-NX",
+                                  "amount": 300,
+                                  "requestId": "use-nexp"
+                                }
+                                """
+                                        .formatted(userId)))
+                .andExpect(status().isOk());
+
+        assertThat(jdbcTemplate.queryForObject(
+                        "SELECT remain_amount FROM POINT_TRADE WHERE point_key = ?", Long.class, earnPk))
+                .isEqualTo(0L);
+
+        mockMvc.perform(post("/api/points/use/cancel")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(
+                                """
+                                {
+                                  "userId": "%s",
+                                  "requestId": "cancel-nexp",
+                                  "originRequestId": "use-nexp",
+                                  "amount": 300
+                                }
+                                """
+                                        .formatted(userId)))
+                .andExpect(status().isOk());
+
+        assertThat(jdbcTemplate.queryForObject(
+                        "SELECT remain_amount FROM POINT_TRADE WHERE point_key = ?", Long.class, earnPk))
+                .isEqualTo(300L);
+    }
+
+    @Test
+    void partial_cancel_expired_source_creates_po05() throws Exception {
+        String userId = "2424242424";
+        MvcResult earnRes = mockMvc.perform(post("/api/points/earn")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(
+                                """
+                                {"userId": "%s", "amount": 400, "requestId": "earn-exp"}
+                                """
+                                        .formatted(userId)))
+                .andExpect(status().isOk())
+                .andReturn();
+        String earnPk = objectMapper.readTree(earnRes.getResponse().getContentAsString()).get("pointKey").asText();
+
+        mockMvc.perform(post("/api/points/use")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(
+                                """
+                                {
+                                  "userId": "%s",
+                                  "orderNo": "ORD-EXP",
+                                  "amount": 400,
+                                  "requestId": "use-exp"
+                                }
+                                """
+                                        .formatted(userId)))
+                .andExpect(status().isOk());
+
+        jdbcTemplate.update("UPDATE POINT_TRADE SET expire_ymd = '20200101' WHERE point_key = ?", earnPk);
+
+        mockMvc.perform(post("/api/points/use/cancel")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(
+                                """
+                                {
+                                  "userId": "%s",
+                                  "requestId": "cancel-exp",
+                                  "originRequestId": "use-exp",
+                                  "amount": 400
+                                }
+                                """
+                                        .formatted(userId)))
+                .andExpect(status().isOk());
+
+        Integer po05 = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM POINT_TRADE WHERE user_id = ? AND trade_type = 'PO05'", Integer.class, userId);
+        assertThat(po05).isEqualTo(1);
+        String po05ReqId = jdbcTemplate.queryForObject(
+                "SELECT request_id FROM POINT_TRADE WHERE user_id = ? AND trade_type = 'PO05'",
+                String.class,
+                userId);
+        assertThat(po05ReqId).startsWith("SYS-").contains("-P05-");
+        assertThat(jdbcTemplate.queryForObject(
+                        "SELECT remain_amount FROM POINT_TRADE WHERE point_key = ?", Long.class, earnPk))
+                .isEqualTo(0L);
+    }
+
+    @Test
+    void cancel_fails_when_amount_exceeds_remaining_cancelable() throws Exception {
+        String userId = "2525252525";
+        mockMvc.perform(post("/api/points/earn")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(
+                                """
+                                {"userId": "%s", "amount": 100, "requestId": "earn-bigc"}
+                                """
+                                        .formatted(userId)))
+                .andExpect(status().isOk());
+        mockMvc.perform(post("/api/points/use")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(
+                                """
+                                {
+                                  "userId": "%s",
+                                  "orderNo": "ORD-BC",
+                                  "amount": 100,
+                                  "requestId": "use-bigc"
+                                }
+                                """
+                                        .formatted(userId)))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(post("/api/points/use/cancel")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(
+                                """
+                                {
+                                  "userId": "%s",
+                                  "requestId": "cancel-bigc",
+                                  "originRequestId": "use-bigc",
+                                  "amount": 101
+                                }
+                                """
+                                        .formatted(userId)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("남은 취소 가능 금액보다 큰 금액을 취소할 수 없습니다."));
     }
 }

@@ -1,5 +1,7 @@
 package com.soojung.point.controller;
 
+import com.soojung.point.dto.CancelEarnPointRequest;
+import com.soojung.point.dto.CancelEarnPointResponse;
 import com.soojung.point.dto.CancelUsePointRequest;
 import com.soojung.point.dto.CancelUsePointResponse;
 import com.soojung.point.dto.EarnPointRequest;
@@ -31,6 +33,12 @@ public class PointController {
     @PostMapping("/earn")
     public EarnPointResponse earn(@RequestBody EarnPointRequest request) {
         return pointService.earn(request);
+    }
+
+    // 적립취소 API
+    @PostMapping("/earn/cancel")
+    public CancelEarnPointResponse cancelEarn(@RequestBody CancelEarnPointRequest request) {
+        return pointService.cancelEarn(request);
     }
 
     // 사용 API

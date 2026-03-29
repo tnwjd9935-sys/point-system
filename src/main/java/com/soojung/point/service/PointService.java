@@ -7,6 +7,8 @@ import com.soojung.point.domain.entity.UserBalance;
 import com.soojung.point.domain.enums.ExpireYn;
 import com.soojung.point.domain.enums.PointStatus;
 import com.soojung.point.domain.enums.TradeType;
+import com.soojung.point.dto.CancelEarnPointRequest;
+import com.soojung.point.dto.CancelEarnPointResponse;
 import com.soojung.point.dto.CancelUsePointRequest;
 import com.soojung.point.dto.CancelUsePointResponse;
 import com.soojung.point.dto.EarnPointRequest;
@@ -20,21 +22,23 @@ import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.stream.Collectors;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-// 포인트 적립·사용
 @Slf4j
 @Service
 public class PointService {
 
-    private static final DateTimeFormatter YMD = DateTimeFormatter.BASIC_ISO_DATE; // yyyyMMdd
+    private static final DateTimeFormatter YMD = DateTimeFormatter.BASIC_ISO_DATE;
+
+    // PO05용 내부 requestId
+    private static String internalPo05RequestId(String cancelRequestId, int seq) {
+        return "SYS-" + cancelRequestId + "-P05-" + seq;
+    }
 
     private final PointPolicyProperties policy;
     private final PointTradeRepository pointTradeRepository;
@@ -56,7 +60,6 @@ public class PointService {
         this.pointKeyGenerator = pointKeyGenerator;
     }
 
-    // 적립 한 건:  request_id로 맞추고, 잔고, 거래·상세는 한 트랜잭션에서 처리
     @Transactional
     public EarnPointResponse earn(EarnPointRequest req) {
         log.info("적립 요청 시작 requestId={}, userId={}, amount={}", req.getRequestId(), req.getUserId(), req.getAmount());
@@ -64,22 +67,21 @@ public class PointService {
             validateBase(req);
             String adminGrantedYn = normalizeAdminGrantedYn(req.getAdminGrantedYn()); // Y/N/null
 
-            // 같은 requestId로 이미 끝난 요청이면 INSERT 없이 예전 결과만 돌려줌
             Optional<PointTrade> existing = pointTradeRepository.selectPointTradeByRequestId(req.getRequestId());
             if (existing.isPresent()) {
                 log.info("기존 적립 거래 재사용 requestId={}, userId={}", req.getRequestId(), req.getUserId());
                 return toEarnResponse(existing.get(), req);
             }
 
-            LocalDate expireDate = resolveExpireDate(req); // 만료일(날짜 타입)
+            LocalDate expireDate = resolveExpireDate(req);
             validateExpireRange(expireDate, LocalDate.now());
-            String expireYmdStr = expireDate.format(YMD); // DB 저장용 문자열
+            String expireYmdStr = expireDate.format(YMD);
             log.debug("만료일 계산 완료 requestId={}, expireYmd={}", req.getRequestId(), expireYmdStr);
 
-            long amount = req.getAmount(); // 이번 적립액
+            long amount = req.getAmount();
             assertBalanceLimit(req.getUserId(), amount);
 
-            String pointKey = pointKeyGenerator.nextUniquePointKey(); // 거래 PK
+            String pointKey = pointKeyGenerator.nextUniquePointKey();
 
             PointTrade trade = new PointTrade(
                     pointKey,
@@ -96,7 +98,6 @@ public class PointService {
             trade.setRequestId(req.getRequestId());
             trade.setAdminGrantedYn(adminGrantedYn);
 
-            // 동시 요청이면 request_id unique에서 걸릴 수 있음 → 저장된 행 다시 읽어서 동일 응답
             try {
                 pointTradeRepository.insertPointTrade(trade);
             } catch (DataIntegrityViolationException e) {
@@ -138,7 +139,174 @@ public class PointService {
         }
     }
 
-    // 사용 한 건: request_id로 맞추고, 차감·상세·잔고를 한 트랜잭션에서 처리
+    @Transactional
+    public CancelEarnPointResponse cancelEarn(CancelEarnPointRequest req) {
+        log.info(
+                "적립취소 시작 requestId={}, originRequestId={}, userId={}",
+                req.getRequestId(),
+                req.getOriginRequestId(),
+                req.getUserId());
+        try {
+            validateCancelEarnBase(req);
+
+            Optional<PointTrade> existingCancel = pointTradeRepository.selectPointTradeByRequestId(req.getRequestId());
+            if (existingCancel.isPresent()) {
+                PointTrade row = existingCancel.get();
+                if (row.getTradeType() == TradeType.PO03) {
+                    log.info("적립취소 재조회 requestId={}, pointKey={}", req.getRequestId(), row.getPointKey());
+                    return toCancelEarnResponse(row, req);
+                }
+                throw new IllegalArgumentException("requestId가 이미 다른 유형의 거래에 사용 중입니다.");
+            }
+
+            PointTrade earn = pointTradeRepository
+                    .selectPointTradeByRequestId(req.getOriginRequestId())
+                    .orElseThrow(() -> new IllegalArgumentException("원 적립 거래를 찾을 수 없습니다."));
+
+            if (earn.getTradeType() != TradeType.PO01) {
+                throw new IllegalArgumentException("적립취소는 원 적립(PO01)만 가능합니다.");
+            }
+            if (!earn.getUserId().equals(req.getUserId())) {
+                throw new IllegalArgumentException("userId가 원 적립 거래와 일치하지 않습니다.");
+            }
+            if (earn.getStatus() != PointStatus.PS01) {
+                throw new IllegalStateException("취소할 수 없는 적립 상태입니다.");
+            }
+            if (!earn.isUnusedEarnForCancelPolicy()) {
+                throw new IllegalStateException("일부 사용된 적립은 적립취소할 수 없습니다.");
+            }
+
+            long cancelAmt = earn.getAmount();
+            UserBalance balanceRow = userBalanceRepository
+                    .selectUserBalance(req.getUserId())
+                    .orElseThrow(() -> new IllegalStateException("잔고 정보가 없습니다."));
+            if (balanceRow.getAvailablePoint() < cancelAmt) {
+                throw new IllegalStateException("가용 포인트가 부족하여 적립취소할 수 없습니다.");
+            }
+
+            pointTradeRepository.updateRemainAmountAndStatus(earn.getPointKey(), 0L, PointStatus.PS03);
+            log.info(
+                    "적립취소 원건 무효 originRequestId={}, earnPointKey={}, amount={}",
+                    req.getOriginRequestId(),
+                    earn.getPointKey(),
+                    cancelAmt);
+
+            balanceRow.setAvailablePoint(balanceRow.getAvailablePoint() - cancelAmt);
+            userBalanceRepository.updateAvailablePoint(balanceRow);
+
+            String cancelPointKey = pointKeyGenerator.nextUniquePointKey();
+            PointTrade po03 = buildCancelEarnTrade(cancelPointKey, req, earn, cancelAmt);
+            try {
+                pointTradeRepository.insertPointTrade(po03);
+            } catch (DataIntegrityViolationException ex) {
+                PointTrade stored = pointTradeRepository.selectPointTradeByRequestId(req.getRequestId()).orElse(null);
+                if (stored != null && stored.getTradeType() == TradeType.PO03) {
+                    log.info("적립취소 중복키 requestId={}, pointKey={}", req.getRequestId(), stored.getPointKey());
+                    return toCancelEarnResponse(stored, req);
+                }
+                throw ex;
+            }
+
+            PointDetail detail = new PointDetail(
+                    req.getUserId(),
+                    cancelPointKey,
+                    TradeType.PO03,
+                    earn.getPointKey(),
+                    cancelPointKey,
+                    cancelAmt,
+                    req.getOriginRequestId());
+            pointDetailRepository.insertPointDetail(detail);
+
+            UserBalance after = userBalanceRepository.selectUserBalance(req.getUserId()).orElseThrow();
+            log.info(
+                    "적립취소 완료 requestId={}, originRequestId={}, po03Key={}, amount={}",
+                    req.getRequestId(),
+                    req.getOriginRequestId(),
+                    cancelPointKey,
+                    cancelAmt);
+
+            return new CancelEarnPointResponse(
+                    cancelPointKey,
+                    req.getUserId(),
+                    req.getOriginRequestId(),
+                    cancelAmt,
+                    after.getAvailablePoint(),
+                    TradeType.PO03.name(),
+                    req.getRequestId(),
+                    "적립취소 완료");
+        } catch (Exception e) {
+            log.error(
+                    "적립취소 실패 requestId={}, originRequestId={}, userId={}, msg={}",
+                    req != null ? req.getRequestId() : null,
+                    req != null ? req.getOriginRequestId() : null,
+                    req != null ? req.getUserId() : null,
+                    e.getMessage(),
+                    e);
+            throw e;
+        }
+    }
+
+    private void validateCancelEarnBase(CancelEarnPointRequest req) {
+        if (req.getRequestId() == null || req.getRequestId().isBlank()) {
+            throw new IllegalArgumentException("requestId는 필수입니다.");
+        }
+        if (req.getUserId() == null || req.getUserId().length() != 10) {
+            throw new IllegalArgumentException("userId는 10자리여야 합니다.");
+        }
+        if (req.getOriginRequestId() == null || req.getOriginRequestId().isBlank()) {
+            throw new IllegalArgumentException("originRequestId는 필수입니다.");
+        }
+    }
+
+    private PointTrade buildCancelEarnTrade(String pointKey, CancelEarnPointRequest req, PointTrade earn, long cancelAmt) {
+        PointTrade trade = new PointTrade(
+                pointKey,
+                req.getUserId(),
+                TradeType.PO03,
+                cancelAmt,
+                0L,
+                req.getOriginRequestId(),
+                earn.getPointKey(),
+                ExpireYn.N,
+                null,
+                PointStatus.PS01);
+        trade.setRequestId(req.getRequestId());
+        return trade;
+    }
+
+    private CancelEarnPointResponse toCancelEarnResponse(PointTrade po03, CancelEarnPointRequest req) {
+        if (!po03.getUserId().equals(req.getUserId())) {
+            throw new IllegalArgumentException("requestId가 다른 사용자 요청과 충돌합니다.");
+        }
+        if (po03.getTradeType() != TradeType.PO03) {
+            throw new IllegalArgumentException("저장된 거래 유형이 적립취소(PO03)가 아닙니다.");
+        }
+        String earnPk = po03.getOriginalPointKey();
+        if (earnPk == null || earnPk.isBlank()) {
+            throw new IllegalStateException("적립취소 거래에 원 적립 point_key가 없습니다.");
+        }
+        PointTrade earn = pointTradeRepository.selectPointTradeByPointKey(earnPk).orElseThrow(() -> new IllegalStateException("원 적립 거래를 찾을 수 없습니다."));
+        if (!Objects.equals(earn.getRequestId(), req.getOriginRequestId())) {
+            throw new IllegalArgumentException("동일 requestId에 대해 originRequestId가 일치하지 않습니다.");
+        }
+        if (!earn.getUserId().equals(req.getUserId())) {
+            throw new IllegalArgumentException("requestId가 다른 사용자 요청과 충돌합니다.");
+        }
+        if (!po03.getAmount().equals(earn.getAmount())) {
+            throw new IllegalArgumentException("동일 requestId에 대해 취소 금액이 일치하지 않습니다.");
+        }
+        UserBalance balance = userBalanceRepository.selectUserBalance(req.getUserId()).orElseThrow();
+        return new CancelEarnPointResponse(
+                po03.getPointKey(),
+                req.getUserId(),
+                req.getOriginRequestId(),
+                po03.getAmount(),
+                balance.getAvailablePoint(),
+                TradeType.PO03.name(),
+                req.getRequestId(),
+                "적립취소 완료");
+    }
+
     @Transactional
     public UsePointResponse use(UsePointRequest req) {
         log.info(
@@ -148,11 +316,9 @@ public class PointService {
                 req.getAmount(),
                 req.getOrderNo());
         try {
-            logJvmMemory("use-start");
-            // 1. 기본 요청값 검증
+            logJvmMemory("사용시작");
             validateUseBase(req);
 
-            // 2. 동일 requestId 처리 이력 확인 (POINT_TRADE 기준)
             Optional<PointTrade> existingByRequest = pointTradeRepository.selectPointTradeByRequestId(req.getRequestId());
             if (existingByRequest.isPresent()) {
                 PointTrade existing = existingByRequest.get();
@@ -165,14 +331,12 @@ public class PointService {
 
             long amount = req.getAmount();
 
-            // 3. 잔고 확인
             long available =
                     userBalanceRepository.selectUserBalance(req.getUserId()).map(UserBalance::getAvailablePoint).orElse(0L);
             if (available < amount) {
                 throw new IllegalStateException("가용 포인트가 부족합니다.");
             }
 
-            // 4. 차감 대상 적립건 조회
             List<PointTrade> candidates = pointTradeRepository.selectAvailableEarnTradesForUse(req.getUserId());
             long sumRemains = candidates.stream().mapToLong(PointTrade::getRemainAmount).sum();
             if (sumRemains < amount) {
@@ -210,9 +374,8 @@ public class PointService {
             String usePointKey = pointKeyGenerator.nextUniquePointKey();
             PointTrade useTrade = buildUsePointTrade(usePointKey, req, amount);
 
-            // 5. 사용 거래 생성
             try {
-                pointTradeRepository.save(useTrade);
+                pointTradeRepository.insertPointTrade(useTrade);
             } catch (DataIntegrityViolationException e) {
                 PointTrade stored =
                         pointTradeRepository.selectPointTradeByRequestId(req.getRequestId()).orElse(null);
@@ -224,14 +387,12 @@ public class PointService {
             }
             log.info("사용 거래 저장 완료 requestId={}, pointKey={}, amount={}", req.getRequestId(), usePointKey, amount);
 
-            // 6. 적립건별 잔여 차감
             for (EarnSlice s : slices) {
                 PointTrade earn = s.trade();
                 earn.setRemainAmount(earn.getRemainAmount() - s.takeAmount());
                 pointTradeRepository.updateRemainAmount(earn);
             }
 
-            // 7. 사용 상세 기록
             for (EarnSlice s : slices) {
                 PointDetail detail = new PointDetail(
                         req.getUserId(),
@@ -241,10 +402,9 @@ public class PointService {
                         usePointKey,
                         s.takeAmount(),
                         req.getOrderNo());
-                pointDetailRepository.save(detail);
+                pointDetailRepository.insertPointDetail(detail);
             }
 
-            // 8. 잔고 반영
             UserBalance balanceRow = userBalanceRepository
                     .selectUserBalance(req.getUserId())
                     .orElseThrow(() -> new IllegalStateException("잔고 정보가 없습니다."));
@@ -278,7 +438,6 @@ public class PointService {
 
     private record EarnSlice(PointTrade trade, long takeAmount) {}
 
-    // 필수 필드 + 적립액이 설정 범위검증
     private void validateBase(EarnPointRequest req) {
         if (req.getRequestId() == null || req.getRequestId().isBlank()) {
             throw new IllegalArgumentException("requestId는 필수입니다.");
@@ -296,7 +455,6 @@ public class PointService {
         }
     }
 
-    // 비었으면 null, 아니면 Y/N만
     private String normalizeAdminGrantedYn(String adminGrantedYn) {
         if (adminGrantedYn == null || adminGrantedYn.isBlank()) {
             return null;
@@ -311,7 +469,6 @@ public class PointService {
         throw new IllegalArgumentException("관리자 수기 지급 여부는 Y 또는 N 이어야 합니다.");
     }
 
-    // 만료일 안 주면 오늘+defaultExpireDays
     private LocalDate resolveExpireDate(EarnPointRequest req) {
         if (req.getExpireYmd() == null || req.getExpireYmd().isBlank()) {
             return LocalDate.now().plusDays(policy.defaultExpireDays());
@@ -323,7 +480,6 @@ public class PointService {
         return LocalDate.parse(raw, YMD);
     }
 
-    // 만료일 정책  (min일 이후 ~ N년 미만)
     private void validateExpireRange(LocalDate expire, LocalDate today) {
         LocalDate minDate = today.plusDays(policy.minExpireDaysFromToday());
         LocalDate maxExclusive = today.plusYears(policy.maxExpireYearsFromToday());
@@ -335,7 +491,6 @@ public class PointService {
         }
     }
 
-    // 적립 넣고 나면 maxBalance 넘는지
     private void assertBalanceLimit(String userId, long earnAmount) {
         long current = userBalanceRepository.selectUserBalance(userId)
                 .map(UserBalance::getAvailablePoint)
@@ -345,7 +500,6 @@ public class PointService {
         }
     }
 
-    // 첫 적립이면 행 만들고, 있으면 가용 잔고만 올림
     private void insertBalanceAfterEarn(String userId, long delta) {
         Optional<UserBalance> opt = userBalanceRepository.selectUserBalance(userId);
         if (opt.isEmpty()) {
@@ -357,7 +511,6 @@ public class PointService {
         }
     }
 
-    // 적립 건당 상세 한 줄 (나중에 사용·상세 추적할 때 묶어서 보려고)
     private void insertEarnDetail(EarnPointRequest req, String pointKey, long amount) {
         PointDetail detail = new PointDetail(
                 req.getUserId(),
@@ -371,7 +524,6 @@ public class PointService {
         pointDetailRepository.insertPointDetail(detail);
     }
 
-    // 사용 요청 필수값·금액 하한
     private void validateUseBase(UsePointRequest req) {
         if (req.getRequestId() == null || req.getRequestId().isBlank()) {
             throw new IllegalArgumentException("requestId는 필수입니다.");
@@ -396,7 +548,7 @@ public class PointService {
                 req.getUserId(),
                 TradeType.PO02,
                 amount,
-                0L,
+                amount,
                 req.getOrderNo(),
                 null,
                 ExpireYn.N,
@@ -406,23 +558,24 @@ public class PointService {
         return trade;
     }
 
-    // 사용취소: 동일 cancel requestId → 저장된 PO04 응답, 원 PO02는 PS04 전환
     @Transactional
     public CancelUsePointResponse cancelUse(CancelUsePointRequest req) {
         log.info(
-                "cancelUse start requestId={}, originRequestId={}, userId={}",
+                "사용취소 시작 requestId={}, originRequestId={}, userId={}, amount={}",
                 req.getRequestId(),
                 req.getOriginRequestId(),
-                req.getUserId());
+                req.getUserId(),
+                req.getAmount());
         try {
-            logJvmMemory("cancelUse-start");
+            logJvmMemory("사용취소시작");
             validateCancelBase(req);
+            long cancelAmt = req.getAmount();
 
             Optional<PointTrade> existingByCancelRequest = pointTradeRepository.selectPointTradeByRequestId(req.getRequestId());
             if (existingByCancelRequest.isPresent()) {
                 PointTrade row = existingByCancelRequest.get();
                 if (row.getTradeType() == TradeType.PO04) {
-                    log.info("cancelUse PO04 cache hit requestId={}, pointKey={}", req.getRequestId(), row.getPointKey());
+                    log.info("사용취소 재조회 requestId={}, pointKey={}", req.getRequestId(), row.getPointKey());
                     return toCancelUseResponse(row, req);
                 }
                 throw new IllegalArgumentException("requestId가 이미 다른 유형의 거래에 사용 중입니다.");
@@ -438,106 +591,158 @@ public class PointService {
             if (!useTrade.getUserId().equals(req.getUserId())) {
                 throw new IllegalArgumentException("userId가 원 사용 거래와 일치하지 않습니다.");
             }
+            if (useTrade.getStatus() == PointStatus.PS04) {
+                throw new IllegalStateException("이미 전액 취소된 사용 거래입니다.");
+            }
             if (useTrade.getStatus() != PointStatus.PS01) {
-                throw new IllegalStateException("이미 취소되었거나 취소할 수 없는 사용 거래입니다.");
+                throw new IllegalStateException("취소할 수 없는 사용 거래 상태입니다.");
+            }
+            if (useTrade.getRemainAmount() <= 0) {
+                throw new IllegalStateException("남은 취소 가능 금액이 없습니다.");
+            }
+            if (useTrade.getRemainAmount() < cancelAmt) {
+                throw new IllegalStateException("남은 취소 가능 금액보다 큰 금액을 취소할 수 없습니다.");
             }
 
-            List<PointDetail> details = pointDetailRepository.selectDetailsForUse(useTrade.getPointKey());
-            long detailSum = details.stream().mapToLong(PointDetail::getAmount).sum();
+            List<PointDetail> po02Rows = pointDetailRepository.selectDetailsForUse(useTrade.getPointKey());
+            long detailSum = po02Rows.stream().mapToLong(PointDetail::getAmount).sum();
             if (detailSum != useTrade.getAmount()) {
                 log.error(
-                        "cancelUse detailSum mismatch originRequestId={}, usePointKey={}, detailSum={}, useAmount={}",
+                        "사용취소 상세합 불일치 originRequestId={}, usePointKey={}, detailSum={}, useAmount={}",
                         req.getOriginRequestId(),
                         useTrade.getPointKey(),
                         detailSum,
                         useTrade.getAmount());
                 throw new IllegalStateException("사용 상세와 원 거래 금액이 일치하지 않습니다. 운영 확인이 필요합니다.");
             }
-            if (details.isEmpty() && useTrade.getAmount() > 0) {
+            if (po02Rows.isEmpty() && useTrade.getAmount() > 0) {
                 throw new IllegalStateException("사용 상세가 없습니다. 운영 확인이 필요합니다.");
             }
 
-            Map<String, Long> restoreBySource = details.stream()
-                    .collect(Collectors.groupingBy(PointDetail::getSourcePointKey, Collectors.summingLong(PointDetail::getAmount)));
+            long sumPo04 = pointTradeRepository.sumPo04AmountByOriginalPointKey(useTrade.getPointKey());
+            long accountedCanceled = useTrade.getAmount() - useTrade.getRemainAmount();
+            if (sumPo04 != accountedCanceled) {
+                log.error(
+                        "사용취소 PO04합 불일치 usePointKey={}, sumPo04={}, accountedCanceled={}",
+                        useTrade.getPointKey(),
+                        sumPo04,
+                        accountedCanceled);
+                throw new IllegalStateException("원 사용 건의 취소 이력과 남은 취소 가능 금액이 맞지 않습니다. 운영 확인이 필요합니다.");
+            }
 
-            for (Map.Entry<String, Long> e : restoreBySource.entrySet()) {
-                String sourcePointKey = e.getKey();
-                long restored = e.getValue();
+            long[] rowAmounts = po02Rows.stream().mapToLong(PointDetail::getAmount).toArray();
+            long[] fifoEarlier = fifoCanceledPerPo02Line(rowAmounts, accountedCanceled);
+
+            String cancelPointKey = pointKeyGenerator.nextUniquePointKey();
+            PointTrade cancelTrade = buildCancelPointTrade(cancelPointKey, req, useTrade, cancelAmt);
+            try {
+                pointTradeRepository.insertPointTrade(cancelTrade);
+            } catch (DataIntegrityViolationException ex) {
+                PointTrade stored = pointTradeRepository.selectPointTradeByRequestId(req.getRequestId()).orElse(null);
+                if (stored != null && stored.getTradeType() == TradeType.PO04) {
+                    log.info("사용취소 중복키 requestId={}, pointKey={}", req.getRequestId(), stored.getPointKey());
+                    return toCancelUseResponse(stored, req);
+                }
+                throw ex;
+            }
+
+            LocalDate today = LocalDate.now();
+            long left = cancelAmt;
+            int po05Seq = 0;
+            for (int i = 0; i < po02Rows.size() && left > 0; i++) {
+                long rowAvail = rowAmounts[i] - fifoEarlier[i];
+                if (rowAvail <= 0) {
+                    continue;
+                }
+                long take = Math.min(rowAvail, left);
+                PointDetail line = po02Rows.get(i);
+                String sourcePointKey = line.getSourcePointKey();
                 if (sourcePointKey == null || sourcePointKey.isBlank()) {
                     throw new IllegalStateException("사용 상세에 source_point_key가 없습니다.");
                 }
-                log.debug(
-                        "cancelUse restore earn originRequestId={}, usePointKey={}, sourcePointKey={}, amount={}",
-                        req.getOriginRequestId(),
-                        useTrade.getPointKey(),
-                        sourcePointKey,
-                        restored);
 
                 PointTrade earn = pointTradeRepository
                         .selectPointTradeByPointKey(sourcePointKey)
                         .orElseThrow(() -> new IllegalStateException("차감된 적립 건을 찾을 수 없습니다. sourcePointKey=" + sourcePointKey));
-
                 if (earn.getTradeType() != TradeType.PO01 && earn.getTradeType() != TradeType.PO05) {
                     throw new IllegalStateException("복원 대상이 적립/재적립 거래가 아닙니다. pointKey=" + sourcePointKey);
                 }
                 if (!earn.getUserId().equals(req.getUserId())) {
                     throw new IllegalStateException("적립 건의 사용자가 일치하지 않습니다. pointKey=" + sourcePointKey);
                 }
-                long remainAfter = earn.getRemainAmount() + restored;
-                if (remainAfter > earn.getAmount()) {
-                    log.error(
-                            "cancelUse remain overflow originRequestId={}, sourcePointKey={}, earnAmount={}, remainAfter={}",
-                            req.getOriginRequestId(),
+
+                String targetKey;
+                if (isEarnExpiredForCancel(earn, today)) {
+                    PointTrade po05 = insertPo05FromCancel(req.getUserId(), take, req.getRequestId(), po05Seq++, today);
+                    targetKey = po05.getPointKey();
+                    log.info(
+                            "사용취소 PO05 userId={}, amount={}, po05Key={}, sourcePointKey={}",
+                            req.getUserId(),
+                            take,
+                            targetKey,
+                            sourcePointKey);
+                } else {
+                    long remainAfter = earn.getRemainAmount() + take;
+                    if (remainAfter > earn.getAmount()) {
+                        log.error(
+                                "사용취소 remain 초과 originRequestId={}, sourcePointKey={}, earnAmount={}, remainAfter={}",
+                                req.getOriginRequestId(),
+                                sourcePointKey,
+                                earn.getAmount(),
+                                remainAfter);
+                        throw new IllegalStateException("복원 결과가 적립 한도를 초과합니다. 데이터 정합성을 확인해 주세요.");
+                    }
+                    earn.setRemainAmount(remainAfter);
+                    pointTradeRepository.updateRemainAmount(earn);
+                    targetKey = sourcePointKey;
+                    log.info(
+                            "사용취소 적립복원 userId={}, sourcePointKey={}, delta={}, after={}",
+                            req.getUserId(),
                             sourcePointKey,
-                            earn.getAmount(),
+                            take,
                             remainAfter);
-                    throw new IllegalStateException("복원 결과가 적립 한도를 초과합니다. 데이터 정합성을 확인해 주세요.");
                 }
-                earn.setRemainAmount(remainAfter);
-                pointTradeRepository.updateRemainAmount(earn);
-                log.info(
-                        "cancelUse remain restored userId={}, sourcePointKey={}, delta={}, after={}",
+
+                PointDetail cancelDetail = new PointDetail(
                         req.getUserId(),
+                        cancelPointKey,
+                        TradeType.PO04,
                         sourcePointKey,
-                        restored,
-                        remainAfter);
+                        targetKey,
+                        take,
+                        useTrade.getOrderNo());
+                pointDetailRepository.insertPointDetail(cancelDetail);
+                left -= take;
+            }
+
+            if (left > 0) {
+                throw new IllegalStateException("취소 배분 실패: 상세 순서 기준으로 취소할 잔량이 부족합니다.");
             }
 
             UserBalance balanceRow = userBalanceRepository
                     .selectUserBalance(req.getUserId())
                     .orElseThrow(() -> new IllegalStateException("잔고 정보가 없습니다."));
-            long availableAfter = balanceRow.getAvailablePoint() + useTrade.getAmount();
-            balanceRow.setAvailablePoint(availableAfter);
+            balanceRow.setAvailablePoint(balanceRow.getAvailablePoint() + cancelAmt);
             userBalanceRepository.updateAvailablePoint(balanceRow);
-            log.info(
-                    "cancelUse balance userId={}, delta={}, after={}",
-                    req.getUserId(),
-                    useTrade.getAmount(),
-                    availableAfter);
+            log.info("사용취소 잔고 userId={}, delta={}, after={}", req.getUserId(), cancelAmt, balanceRow.getAvailablePoint());
 
-            pointTradeRepository.updateTradeStatus(useTrade.getPointKey(), PointStatus.PS04);
-            log.info(
-                    "cancelUse PO02 status update usePointKey={}, to={}, originRequestId={}",
-                    useTrade.getPointKey(),
-                    PointStatus.PS04.getCode(),
-                    req.getOriginRequestId());
-
-            String cancelPointKey = pointKeyGenerator.nextUniquePointKey();
-            PointTrade cancelTrade = buildCancelPointTrade(cancelPointKey, req, useTrade);
-            try {
-                pointTradeRepository.save(cancelTrade);
-            } catch (DataIntegrityViolationException ex) {
-                PointTrade stored = pointTradeRepository.selectPointTradeByRequestId(req.getRequestId()).orElse(null);
-                if (stored != null && stored.getTradeType() == TradeType.PO04) {
-                    log.info("cancelUse dup key requestId={}, pointKey={}", req.getRequestId(), stored.getPointKey());
-                    return toCancelUseResponse(stored, req);
-                }
-                throw ex;
+            long newRemain = useTrade.getRemainAmount() - cancelAmt;
+            useTrade.setRemainAmount(newRemain);
+            pointTradeRepository.updateRemainAmount(useTrade);
+            if (newRemain > 0) {
+                pointTradeRepository.updateTradeStatus(useTrade.getPointKey(), PointStatus.PS01);
+            } else {
+                pointTradeRepository.updateTradeStatus(useTrade.getPointKey(), PointStatus.PS04);
             }
+            log.info(
+                    "사용취소 PO02 usePointKey={}, remainAfter={}, status={}",
+                    useTrade.getPointKey(),
+                    newRemain,
+                    newRemain > 0 ? PointStatus.PS01.getCode() : PointStatus.PS04.getCode());
 
             UserBalance after = userBalanceRepository.selectUserBalance(req.getUserId()).orElseThrow();
             log.info(
-                    "cancelUse done requestId={}, originRequestId={}, cancelPointKey={}, userId={}",
+                    "사용취소 완료 requestId={}, originRequestId={}, cancelPointKey={}, userId={}",
                     req.getRequestId(),
                     req.getOriginRequestId(),
                     cancelPointKey,
@@ -547,14 +752,14 @@ public class PointService {
                     cancelPointKey,
                     req.getUserId(),
                     req.getOriginRequestId(),
-                    useTrade.getAmount(),
+                    cancelAmt,
                     after.getAvailablePoint(),
                     TradeType.PO04.name(),
                     req.getRequestId(),
                     "사용취소 완료");
         } catch (Exception e) {
             log.error(
-                    "cancelUse fail requestId={}, originRequestId={}, userId={}, msg={}",
+                    "사용취소 실패 requestId={}, originRequestId={}, userId={}, msg={}",
                     req != null ? req.getRequestId() : null,
                     req != null ? req.getOriginRequestId() : null,
                     req != null ? req.getUserId() : null,
@@ -574,14 +779,70 @@ public class PointService {
         if (req.getOriginRequestId() == null || req.getOriginRequestId().isBlank()) {
             throw new IllegalArgumentException("originRequestId는 필수입니다.");
         }
+        if (req.getAmount() == null) {
+            throw new IllegalArgumentException("amount는 필수입니다.");
+        }
+        if (req.getAmount() < 1) {
+            throw new IllegalArgumentException("취소 금액은 1 이상이어야 합니다.");
+        }
     }
 
-    private PointTrade buildCancelPointTrade(String pointKey, CancelUsePointRequest req, PointTrade useTrade) {
+    // 기존 취소분을 PO02 상세 행별로 FIFO 배분한 누적액
+    private static long[] fifoCanceledPerPo02Line(long[] rowAmounts, long totalCanceledEarlier) {
+        long[] applied = new long[rowAmounts.length];
+        long left = totalCanceledEarlier;
+        for (int i = 0; i < rowAmounts.length; i++) {
+            long take = Math.min(rowAmounts[i], left);
+            applied[i] = take;
+            left -= take;
+        }
+        return applied;
+    }
+
+    private boolean isEarnExpiredForCancel(PointTrade earn, LocalDate today) {
+        if (earn.getExpireYn() != ExpireYn.Y) {
+            return false;
+        }
+        String ymd = earn.getExpireYmd();
+        if (ymd == null || ymd.isBlank()) {
+            return false;
+        }
+        LocalDate exp = LocalDate.parse(ymd.trim(), YMD);
+        return today.isAfter(exp);
+    }
+
+    // 만료 적립 → PO05 재적립. maxBalance 미적용. requestId는 internalPo05RequestId.
+    private PointTrade insertPo05FromCancel(String userId, long amount, String cancelRequestId, int seq, LocalDate today) {
+        LocalDate expireDate = today.plusDays(policy.defaultExpireDays());
+        validateExpireRange(expireDate, today);
+        String expireYmdStr = expireDate.format(YMD);
+        String pointKey = pointKeyGenerator.nextUniquePointKey();
+        String po05RequestId = internalPo05RequestId(cancelRequestId, seq);
+        PointTrade trade = new PointTrade(
+                pointKey,
+                userId,
+                TradeType.PO05,
+                amount,
+                amount,
+                cancelRequestId,
+                null,
+                ExpireYn.Y,
+                expireYmdStr,
+                PointStatus.PS01);
+        trade.setRequestId(po05RequestId);
+        pointTradeRepository.insertPointTrade(trade);
+        insertBalanceAfterEarn(userId, amount);
+        PointDetail detail = new PointDetail(userId, pointKey, TradeType.PO05, null, pointKey, amount, po05RequestId);
+        pointDetailRepository.insertPointDetail(detail);
+        return trade;
+    }
+
+    private PointTrade buildCancelPointTrade(String pointKey, CancelUsePointRequest req, PointTrade useTrade, long cancelAmt) {
         PointTrade trade = new PointTrade(
                 pointKey,
                 req.getUserId(),
                 TradeType.PO04,
-                useTrade.getAmount(),
+                cancelAmt,
                 0L,
                 useTrade.getOrderNo(),
                 useTrade.getPointKey(),
@@ -598,6 +859,9 @@ public class PointService {
         }
         if (po04.getTradeType() != TradeType.PO04) {
             throw new IllegalArgumentException("저장된 거래 유형이 사용취소(PO04)가 아닙니다.");
+        }
+        if (!po04.getAmount().equals(req.getAmount())) {
+            throw new IllegalArgumentException("동일 requestId에 대해 취소 금액이 일치하지 않습니다.");
         }
         String originalPk = po04.getOriginalPointKey();
         if (originalPk == null || originalPk.isBlank()) {
@@ -624,7 +888,6 @@ public class PointService {
                 "사용취소 완료");
     }
 
-    // 이미 끝난 사용 요청이면 저장된 거래·현재 잔고로 응답 맞춤
     private UsePointResponse toUseResponse(PointTrade trade, UsePointRequest req) {
         if (!trade.getUserId().equals(req.getUserId())) {
             throw new IllegalArgumentException("requestId가 다른 사용자 요청과 충돌합니다.");
@@ -647,7 +910,6 @@ public class PointService {
                 "사용 완료");
     }
 
-    // 중복거래 체크 저장돼 있던 거래 + 현재 잔고로 응답 맞춤
     private EarnPointResponse toEarnResponse(PointTrade trade, EarnPointRequest req) {
         if (!trade.getUserId().equals(req.getUserId())) {
             throw new IllegalArgumentException("requestId가 다른 사용자 요청과 충돌합니다.");
@@ -667,7 +929,6 @@ public class PointService {
         );
     }
 
-    /** DEBUG: heap 스냅샷 (증가 추세·OOM 전조 보조, 정밀 진단용 아님) */
     private void logJvmMemory(String phase) {
         if (!log.isDebugEnabled()) {
             return;

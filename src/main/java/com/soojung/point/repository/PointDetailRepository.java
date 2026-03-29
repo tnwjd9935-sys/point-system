@@ -27,7 +27,6 @@ public class PointDetailRepository {
         this.jdbcTemplate = jdbcTemplate;
     }
 
-    // insert 후 생성된 detail_id를 엔티티에 세팅
     public PointDetail insertPointDetail(PointDetail entity) {
         if (entity.getCreatedAt() == null) {
             entity.onBeforeInsert();
@@ -75,11 +74,6 @@ public class PointDetailRepository {
         return entity;
     }
 
-    // 상세 한 건 저장 (INSERT)
-    public PointDetail save(PointDetail detail) {
-        return insertPointDetail(detail);
-    }
-
     public int updatePointDetail(PointDetail entity) {
         queryLog.debug("UPDATE POINT_DETAIL detailId={}, pointKey={}", entity.getDetailId(), entity.getPointKey());
         return jdbcTemplate.update(
@@ -121,7 +115,7 @@ public class PointDetailRepository {
                 pointKey);
     }
 
-    /** 사용(PO02) 건의 차감 상세 (취소 시 복원 집계) */
+    // PO02 사용 건의 차감 상세
     public List<PointDetail> selectDetailsForUse(String usePointKey) {
         queryLog.debug("SELECT POINT_DETAIL usePointKey={}, tradeType=PO02", usePointKey);
         return jdbcTemplate.query(

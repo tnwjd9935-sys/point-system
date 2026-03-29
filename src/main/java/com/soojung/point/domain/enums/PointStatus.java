@@ -19,10 +19,7 @@ public enum PointStatus {
         return code;
     }
 
-    /**
-     * DB/외부에서 온 상태 문자열을 enum으로 변환한다.
-     * PS01~PS04 및 레거시 ACTIVE, EXPIRED, CANCELED, CANCELLED 를 대소문자 무시하고 인식한다.
-     */
+    // DB/외부 문자열 → enum. PS01~PS04 및 ACTIVE, EXPIRED, CANCELED/CANCELLED(대소문자 무시)
     public static PointStatus fromCode(String raw) {
         if (raw == null || raw.isBlank()) {
             throw new IllegalArgumentException("거래 상태 값이 비어 있습니다. POINT_TRADE.status 컬럼을 확인하세요.");

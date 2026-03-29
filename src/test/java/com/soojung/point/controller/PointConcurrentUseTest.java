@@ -18,10 +18,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
-/**
- * 동일 사용자에 대한 동시 use 호출 시 잔고가 의도보다 많이 깎이지 않는지 확인한다.
- * (완전한 동시성 제어 검증이 아니라, 정합성 위험을 드러내는 수준의 다중 스레드 테스트)
- */
+// 동일 사용자 동시 use 시 잔고가 과도하게 깎이지 않는지 확인 (다중 스레드 스모크)
 @SpringBootTest
 @AutoConfigureMockMvc
 class PointConcurrentUseTest {

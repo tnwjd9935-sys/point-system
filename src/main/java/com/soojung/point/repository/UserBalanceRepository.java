@@ -15,14 +15,13 @@ public class UserBalanceRepository {
 
     private static final Logger queryLog = LoggerFactory.getLogger("QUERY_LOG");
 
-    private final JdbcTemplate jdbcTemplate; // 스프링이 주입, 트랜잭션은 서비스에서
-    private static final UserBalanceRowMapper ROW_MAPPER = new UserBalanceRowMapper(); // ResultSet → 엔티티
+    private final JdbcTemplate jdbcTemplate;
+    private static final UserBalanceRowMapper ROW_MAPPER = new UserBalanceRowMapper();
 
     public UserBalanceRepository(JdbcTemplate jdbcTemplate) {
         this.jdbcTemplate = jdbcTemplate;
     }
 
-    // 신규 사용자 잔고 행
     public void insertUserBalance(UserBalance entity) {
         if (entity.getCreatedAt() == null) {
             entity.onBeforeInsert();
@@ -49,7 +48,6 @@ public class UserBalanceRepository {
                 entity.getUpdatedAt());
     }
 
-    // 가용 포인트·updated_at 갱신
     public int updateAvailablePoint(UserBalance entity) {
         entity.onBeforeUpdate();
         queryLog.debug(

@@ -2,6 +2,7 @@ package com.soojung.point.repository;
 
 import com.soojung.point.domain.entity.PointTrade;
 import com.soojung.point.domain.enums.PointStatus;
+import com.soojung.point.domain.enums.TradeType;
 import com.soojung.point.repository.mapper.PointTradeRowMapper;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -24,7 +25,7 @@ public class PointTradeRepository {
         this.jdbcTemplate = jdbcTemplate;
     }
 
-    public void save(PointTrade entity) {
+    public void insertPointTrade(PointTrade entity) {
         if (entity.getCreatedAt() == null) {
             entity.onBeforeInsert();
         }
@@ -109,7 +110,28 @@ public class PointTradeRepository {
                 entity.getPointKey());
     }
 
-    /** status·updated_at 만 갱신 (전액 UPDATE 회피) */
+    // remain·status 동시 갱신
+    public int updateRemainAmountAndStatus(String pointKey, long remainAmount, PointStatus status) {
+        LocalDateTime now = LocalDateTime.now();
+        queryLog.debug(
+                "UPDATE POINT_TRADE remain+status pointKey={}, remainAmount={}, status={}",
+                pointKey,
+                remainAmount,
+                status.getCode());
+        return jdbcTemplate.update(
+                """
+                UPDATE POINT_TRADE SET
+                    remain_amount = ?,
+                    status = ?,
+                    updated_at = ?
+                WHERE point_key = ?
+                """,
+                remainAmount,
+                status.getCode(),
+                now,
+                pointKey);
+    }
+
     public int updateTradeStatus(String pointKey, PointStatus status) {
         LocalDateTime now = LocalDateTime.now();
         queryLog.debug("UPDATE POINT_TRADE status pointKey={}, status={}", pointKey, status.getCode());
@@ -125,11 +147,6 @@ public class PointTradeRepository {
                 pointKey);
     }
 
-    public void insertPointTrade(PointTrade trade) {
-        save(trade);
-    }
-
-    // 잔여 포인트만 갱신 (사용 차감 등)
     public int updateRemainAmount(PointTrade entity) {
         entity.onBeforeUpdate();
         queryLog.debug(
@@ -207,5 +224,21 @@ public class PointTradeRepository {
                 "SELECT * FROM POINT_TRADE WHERE user_id = ? ORDER BY created_at",
                 ROW_MAPPER,
                 userId);
+    }
+
+    // 원 PO02 기준 PO04 취소액 합계
+    public long sumPo04AmountByOriginalPointKey(String originalPointKey) {
+        queryLog.debug("SUM PO04 amount originalPointKey={}", originalPointKey);
+        Long v = jdbcTemplate.queryForObject(
+                """
+                SELECT COALESCE(SUM(amount), 0)
+                FROM POINT_TRADE
+                WHERE trade_type = ?
+                  AND original_point_key = ?
+                """,
+                Long.class,
+                TradeType.PO04.name(),
+                originalPointKey);
+        return v != null ? v : 0L;
     }
 }
