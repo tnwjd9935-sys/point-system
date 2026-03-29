@@ -24,6 +24,7 @@ logging:
   level:
     root: INFO
     com.soojung.point: DEBUG
+    QUERY_LOG: DEBUG
 
 point:
   policy:

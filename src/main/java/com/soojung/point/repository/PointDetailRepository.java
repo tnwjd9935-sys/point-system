@@ -7,6 +7,8 @@ import java.sql.Statement;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.stereotype.Repository;
@@ -14,6 +16,8 @@ import org.springframework.stereotype.Repository;
 // POINT_DETAIL 테이블 전용 JdbcTemplate 접근
 @Repository
 public class PointDetailRepository {
+
+    private static final Logger queryLog = LoggerFactory.getLogger("QUERY_LOG");
 
     private final JdbcTemplate jdbcTemplate;
     private static final PointDetailRowMapper ROW_MAPPER = new PointDetailRowMapper();
@@ -27,6 +31,13 @@ public class PointDetailRepository {
         if (entity.getCreatedAt() == null) {
             entity.onBeforeInsert();
         }
+        queryLog.debug(
+                "INSERT POINT_DETAIL userId={}, pointKey={}, tradeType={}, amount={}, orderNo={}",
+                entity.getUserId(),
+                entity.getPointKey(),
+                entity.getTradeType(),
+                entity.getAmount(),
+                entity.getOrderNo());
         GeneratedKeyHolder keyHolder = new GeneratedKeyHolder();
         jdbcTemplate.update(
                 connection -> {
@@ -63,7 +74,13 @@ public class PointDetailRepository {
         return entity;
     }
 
+    // 상세 한 건 저장 (INSERT)
+    public PointDetail save(PointDetail detail) {
+        return insertPointDetail(detail);
+    }
+
     public int updatePointDetail(PointDetail entity) {
+        queryLog.debug("UPDATE POINT_DETAIL detailId={}, pointKey={}", entity.getDetailId(), entity.getPointKey());
         return jdbcTemplate.update(
                 """
                 UPDATE POINT_DETAIL SET
@@ -87,6 +104,7 @@ public class PointDetailRepository {
     }
 
     public Optional<PointDetail> selectPointDetailByDetailId(Long detailId) {
+        queryLog.debug("SELECT POINT_DETAIL BY detailId={}", detailId);
         List<PointDetail> rows = jdbcTemplate.query(
                 "SELECT * FROM POINT_DETAIL WHERE detail_id = ?",
                 ROW_MAPPER,
@@ -95,6 +113,7 @@ public class PointDetailRepository {
     }
 
     public List<PointDetail> selectPointDetailsByPointKey(String pointKey) {
+        queryLog.debug("SELECT POINT_DETAIL BY pointKey={}", pointKey);
         return jdbcTemplate.query(
                 "SELECT * FROM POINT_DETAIL WHERE point_key = ? ORDER BY detail_id",
                 ROW_MAPPER,
@@ -102,6 +121,7 @@ public class PointDetailRepository {
     }
 
     public List<PointDetail> selectPointDetailsByUserId(String userId) {
+        queryLog.debug("SELECT POINT_DETAIL BY userId={}", userId);
         return jdbcTemplate.query(
                 "SELECT * FROM POINT_DETAIL WHERE user_id = ? ORDER BY detail_id",
                 ROW_MAPPER,
