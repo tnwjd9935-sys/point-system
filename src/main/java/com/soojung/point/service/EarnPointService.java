@@ -101,6 +101,13 @@ public class EarnPointService {
                     req.getRequestId(),
                     "적립 완료"
             );
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            log.warn(
+                    "적립 처리 실패 requestId={}, userId={}, message={}",
+                    req != null ? req.getRequestId() : null,
+                    req != null ? req.getUserId() : null,
+                    e.getMessage());
+            throw e;
         } catch (Exception e) {
             log.error(
                     "적립 처리 실패 requestId={}, userId={}, message={}",

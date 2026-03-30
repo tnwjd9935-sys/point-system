@@ -73,4 +73,13 @@ public class UserBalanceRepository {
                 userId);
         return rows.isEmpty() ? Optional.empty() : Optional.of(rows.getFirst());
     }
+
+    public Optional<UserBalance> selectUserBalanceForUpdate(String userId) {
+        queryLog.debug("SELECT USER_BALANCE FOR UPDATE userId={}", userId);
+        List<UserBalance> rows = jdbcTemplate.query(
+                "SELECT * FROM USER_BALANCE WHERE user_id = ? FOR UPDATE",
+                ROW_MAPPER,
+                userId);
+        return rows.isEmpty() ? Optional.empty() : Optional.of(rows.getFirst());
+    }
 }

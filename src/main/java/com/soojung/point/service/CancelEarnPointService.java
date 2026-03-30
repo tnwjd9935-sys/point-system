@@ -49,7 +49,7 @@ public class CancelEarnPointService {
             }
 
             PointTrade earn = pointTradeRepository
-                    .selectPointTradeByRequestId(req.getOriginRequestId())
+                    .selectPointTradeByRequestIdForUpdate(req.getOriginRequestId())
                     .orElseThrow(() -> new IllegalArgumentException("원 적립 거래를 찾을 수 없습니다."));
 
             if (earn.getTradeType() != TradeType.PO01) {
@@ -67,7 +67,7 @@ public class CancelEarnPointService {
 
             long cancelAmt = earn.getAmount();
             UserBalance balanceRow = userBalanceRepository
-                    .selectUserBalance(req.getUserId())
+                    .selectUserBalanceForUpdate(req.getUserId())
                     .orElseThrow(() -> new IllegalStateException("잔고 정보가 없습니다."));
             if (balanceRow.getAvailablePoint() < cancelAmt) {
                 throw new IllegalStateException("가용 포인트가 부족하여 적립취소할 수 없습니다.");
@@ -123,6 +123,14 @@ public class CancelEarnPointService {
                     TradeType.PO03.name(),
                     req.getRequestId(),
                     "적립취소 완료");
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            log.warn(
+                    "적립취소 실패 requestId={}, originRequestId={}, userId={}, msg={}",
+                    req != null ? req.getRequestId() : null,
+                    req != null ? req.getOriginRequestId() : null,
+                    req != null ? req.getUserId() : null,
+                    e.getMessage());
+            throw e;
         } catch (Exception e) {
             log.error(
                     "적립취소 실패 requestId={}, originRequestId={}, userId={}, msg={}",

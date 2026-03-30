@@ -48,9 +48,9 @@ public class UsePointService {
             }
 
             long amount = req.getAmount();
-            assertSufficientBalance(req.getUserId(), amount);
+            UserBalance lockedBalance = lockAndValidateBalanceForUse(req.getUserId(), amount);
 
-            List<PointTrade> candidates = loadEarnCandidatesForUse(req.getUserId(), amount);
+            List<PointTrade> candidates = loadEarnCandidatesForUseForUpdate(req.getUserId(), amount);
             List<EarnSlice> slices = allocateEarnSlices(req, candidates, amount);
 
             String usePointKey = pointKeyGenerator.nextUniquePointKey();
@@ -63,7 +63,7 @@ public class UsePointService {
             applyEarnDeductions(slices);
             insertUseDetails(req, usePointKey, slices);
 
-            UserBalance after = deductBalance(req.getUserId(), amount);
+            UserBalance after = deductBalance(lockedBalance, amount);
             log.info("잔고 반영 완료 userId={}, availablePoint={}", req.getUserId(), after.getAvailablePoint());
 
             log.info("사용 처리 완료 requestId={}, userId={}, pointKey={}", req.getRequestId(), req.getUserId(), usePointKey);
@@ -77,6 +77,13 @@ public class UsePointService {
                     TradeType.PO02.name(),
                     req.getRequestId(),
                     "사용 완료");
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            log.warn(
+                    "사용 처리 실패 requestId={}, userId={}, message={}",
+                    req != null ? req.getRequestId() : null,
+                    req != null ? req.getUserId() : null,
+                    e.getMessage());
+            throw e;
         } catch (Exception e) {
             log.error(
                     "사용 처리 실패 requestId={}, userId={}, message={}",
@@ -106,15 +113,17 @@ public class UsePointService {
         throw new IllegalArgumentException("requestId가 이미 다른 유형의 거래에 사용 중입니다.");
     }
 
-    private void assertSufficientBalance(String userId, long amount) {
-        long available = userBalanceRepository.selectUserBalance(userId).map(UserBalance::getAvailablePoint).orElse(0L);
+    private UserBalance lockAndValidateBalanceForUse(String userId, long amount) {
+        Optional<UserBalance> locked = userBalanceRepository.selectUserBalanceForUpdate(userId);
+        long available = locked.map(UserBalance::getAvailablePoint).orElse(0L);
         if (available < amount) {
             throw new IllegalStateException("가용 포인트가 부족합니다.");
         }
+        return locked.orElseThrow(() -> new IllegalStateException("잔고 정보가 없습니다."));
     }
 
-    private List<PointTrade> loadEarnCandidatesForUse(String userId, long amount) {
-        List<PointTrade> candidates = pointTradeRepository.selectAvailableEarnTradesForUse(userId);
+    private List<PointTrade> loadEarnCandidatesForUseForUpdate(String userId, long amount) {
+        List<PointTrade> candidates = pointTradeRepository.selectAvailableEarnTradesForUseForUpdate(userId);
         long sumRemains = candidates.stream().mapToLong(PointTrade::getRemainAmount).sum();
         if (sumRemains < amount) {
             throw new IllegalStateException("차감 가능한 적립 잔량이 부족합니다.");
@@ -187,13 +196,10 @@ public class UsePointService {
         }
     }
 
-    private UserBalance deductBalance(String userId, long amount) {
-        UserBalance balanceRow = userBalanceRepository
-                .selectUserBalance(userId)
-                .orElseThrow(() -> new IllegalStateException("잔고 정보가 없습니다."));
+    private UserBalance deductBalance(UserBalance balanceRow, long amount) {
         balanceRow.setAvailablePoint(balanceRow.getAvailablePoint() - amount);
         userBalanceRepository.updateAvailablePoint(balanceRow);
-        return userBalanceRepository.selectUserBalance(userId).orElseThrow();
+        return userBalanceRepository.selectUserBalance(balanceRow.getUserId()).orElseThrow();
     }
 
     private void validateUseBase(UsePointRequest req) {

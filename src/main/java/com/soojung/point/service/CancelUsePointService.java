@@ -59,6 +59,7 @@ public class CancelUsePointService {
             }
 
             PointTrade useTrade = loadAndValidateUseTrade(req, cancelAmt);
+            UserBalance lockedBalance = lockBalanceForCancelUse(req.getUserId());
             List<PointDetail> po02Rows = loadAndValidatePo02Details(req, useTrade);
 
             long sumPo04 = pointTradeRepository.sumPo04AmountByOriginalPointKey(useTrade.getPointKey());
@@ -75,7 +76,7 @@ public class CancelUsePointService {
             long[] fifoEarlier = fifoCanceledPerPo02Line(rowAmounts, accountedCanceled);
             applyRestoreAndInsertDetails(req, useTrade, po02Rows, rowAmounts, fifoEarlier, cancelPointKey, cancelAmt);
 
-            applyBalanceAndUpdateUseTrade(req, useTrade, cancelAmt);
+            applyBalanceAndUpdateUseTrade(req, lockedBalance, useTrade, cancelAmt);
 
             UserBalance after = userBalanceRepository.selectUserBalance(req.getUserId()).orElseThrow();
             log.info(
@@ -94,6 +95,14 @@ public class CancelUsePointService {
                     TradeType.PO04.name(),
                     req.getRequestId(),
                     "사용취소 완료");
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            log.warn(
+                    "사용취소 실패 requestId={}, originRequestId={}, userId={}, msg={}",
+                    req != null ? req.getRequestId() : null,
+                    req != null ? req.getOriginRequestId() : null,
+                    req != null ? req.getUserId() : null,
+                    e.getMessage());
+            throw e;
         } catch (Exception e) {
             log.error(
                     "사용취소 실패 requestId={}, originRequestId={}, userId={}, msg={}",
@@ -124,7 +133,7 @@ public class CancelUsePointService {
 
     private PointTrade loadAndValidateUseTrade(CancelUsePointRequest req, long cancelAmt) {
         PointTrade useTrade = pointTradeRepository
-                .selectPointTradeByRequestId(req.getOriginRequestId())
+                .selectPointTradeByRequestIdForUpdate(req.getOriginRequestId())
                 .orElseThrow(() -> new IllegalArgumentException("원 사용 거래를 찾을 수 없습니다."));
 
         if (useTrade.getTradeType() != TradeType.PO02) {
@@ -146,6 +155,12 @@ public class CancelUsePointService {
             throw new IllegalStateException("남은 취소 가능 금액보다 큰 금액을 취소할 수 없습니다.");
         }
         return useTrade;
+    }
+
+    private UserBalance lockBalanceForCancelUse(String userId) {
+        return userBalanceRepository
+                .selectUserBalanceForUpdate(userId)
+                .orElseThrow(() -> new IllegalStateException("잔고 정보가 없습니다."));
     }
 
     private List<PointDetail> loadAndValidatePo02Details(CancelUsePointRequest req, PointTrade useTrade) {
@@ -217,7 +232,7 @@ public class CancelUsePointService {
             }
 
             PointTrade earn = pointTradeRepository
-                    .selectPointTradeByPointKey(sourcePointKey)
+                    .selectPointTradeByPointKeyForUpdate(sourcePointKey)
                     .orElseThrow(() -> new IllegalStateException("차감된 적립 건을 찾을 수 없습니다. sourcePointKey=" + sourcePointKey));
             if (earn.getTradeType() != TradeType.PO01 && earn.getTradeType() != TradeType.PO05) {
                 throw new IllegalStateException("복원 대상이 적립/재적립 거래가 아닙니다. pointKey=" + sourcePointKey);
@@ -275,10 +290,8 @@ public class CancelUsePointService {
         }
     }
 
-    private void applyBalanceAndUpdateUseTrade(CancelUsePointRequest req, PointTrade useTrade, long cancelAmt) {
-        UserBalance balanceRow = userBalanceRepository
-                .selectUserBalance(req.getUserId())
-                .orElseThrow(() -> new IllegalStateException("잔고 정보가 없습니다."));
+    private void applyBalanceAndUpdateUseTrade(
+            CancelUsePointRequest req, UserBalance balanceRow, PointTrade useTrade, long cancelAmt) {
         balanceRow.setAvailablePoint(balanceRow.getAvailablePoint() + cancelAmt);
         userBalanceRepository.updateAvailablePoint(balanceRow);
         log.info("사용취소 잔고 userId={}, delta={}, after={}", req.getUserId(), cancelAmt, balanceRow.getAvailablePoint());

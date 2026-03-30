@@ -199,10 +199,54 @@ public class PointTradeRepository {
                 PointStatus.PS01.getCode());
     }
 
+    public List<PointTrade> selectAvailableEarnTradesForUseForUpdate(String userId) {
+        queryLog.debug("SELECT POINT_TRADE available_for_use FOR UPDATE userId={}", userId);
+        return jdbcTemplate.query(
+                """
+                SELECT
+                    point_key,
+                    user_id,
+                    trade_type,
+                    amount,
+                    remain_amount,
+                    order_no,
+                    original_point_key,
+                    expire_yn,
+                    expire_ymd,
+                    status,
+                    request_id,
+                    admin_granted_yn,
+                    created_at,
+                    updated_at
+                FROM POINT_TRADE
+                WHERE user_id = ?
+                  AND trade_type IN ('PO01', 'PO05')
+                  AND remain_amount > 0
+                  AND status = ?
+                ORDER BY
+                    CASE WHEN admin_granted_yn = 'Y' THEN 0 ELSE 1 END,
+                    expire_ymd ASC NULLS LAST,
+                    created_at ASC
+                FOR UPDATE
+                """,
+                ROW_MAPPER,
+                userId,
+                PointStatus.PS01.getCode());
+    }
+
     public Optional<PointTrade> selectPointTradeByPointKey(String pointKey) {
         queryLog.debug("SELECT POINT_TRADE BY pointKey={}", pointKey);
         List<PointTrade> rows = jdbcTemplate.query(
                 "SELECT * FROM POINT_TRADE WHERE point_key = ?",
+                ROW_MAPPER,
+                pointKey);
+        return rows.isEmpty() ? Optional.empty() : Optional.of(rows.getFirst());
+    }
+
+    public Optional<PointTrade> selectPointTradeByPointKeyForUpdate(String pointKey) {
+        queryLog.debug("SELECT POINT_TRADE BY pointKey FOR UPDATE pointKey={}", pointKey);
+        List<PointTrade> rows = jdbcTemplate.query(
+                "SELECT * FROM POINT_TRADE WHERE point_key = ? FOR UPDATE",
                 ROW_MAPPER,
                 pointKey);
         return rows.isEmpty() ? Optional.empty() : Optional.of(rows.getFirst());
@@ -213,6 +257,15 @@ public class PointTradeRepository {
         queryLog.debug("SELECT POINT_TRADE BY requestId={}", requestId);
         List<PointTrade> rows = jdbcTemplate.query(
                 "SELECT * FROM POINT_TRADE WHERE request_id = ?",
+                ROW_MAPPER,
+                requestId);
+        return rows.isEmpty() ? Optional.empty() : Optional.of(rows.getFirst());
+    }
+
+    public Optional<PointTrade> selectPointTradeByRequestIdForUpdate(String requestId) {
+        queryLog.debug("SELECT POINT_TRADE BY requestId FOR UPDATE requestId={}", requestId);
+        List<PointTrade> rows = jdbcTemplate.query(
+                "SELECT * FROM POINT_TRADE WHERE request_id = ? FOR UPDATE",
                 ROW_MAPPER,
                 requestId);
         return rows.isEmpty() ? Optional.empty() : Optional.of(rows.getFirst());
