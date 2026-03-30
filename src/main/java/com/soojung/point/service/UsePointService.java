@@ -31,6 +31,7 @@ public class UsePointService {
     private final PointKeyGenerator pointKeyGenerator;
 
     public UsePointResponse use(UsePointRequest req) {
+        final long startedAt = System.nanoTime();
         log.info(
                 "사용 요청 시작 requestId={}, userId={}, amount={}, orderNo={}",
                 req.getRequestId(),
@@ -41,99 +42,28 @@ public class UsePointService {
             logJvmMemory("사용시작");
             validateUseBase(req);
 
-            Optional<PointTrade> existingByRequest = pointTradeRepository.selectPointTradeByRequestId(req.getRequestId());
-            if (existingByRequest.isPresent()) {
-                PointTrade existing = existingByRequest.get();
-                if (existing.getTradeType() == TradeType.PO02) {
-                    log.info("기존 사용 거래 재사용 requestId={}, userId={}", req.getRequestId(), req.getUserId());
-                    return toUseResponse(existing, req);
-                }
-                throw new IllegalArgumentException("requestId가 이미 다른 유형의 거래에 사용 중입니다.");
+            Optional<UsePointResponse> idem = findIdempotentUseResponse(req);
+            if (idem.isPresent()) {
+                return idem.get();
             }
 
             long amount = req.getAmount();
+            assertSufficientBalance(req.getUserId(), amount);
 
-            long available =
-                    userBalanceRepository.selectUserBalance(req.getUserId()).map(UserBalance::getAvailablePoint).orElse(0L);
-            if (available < amount) {
-                throw new IllegalStateException("가용 포인트가 부족합니다.");
-            }
-
-            List<PointTrade> candidates = pointTradeRepository.selectAvailableEarnTradesForUse(req.getUserId());
-            long sumRemains = candidates.stream().mapToLong(PointTrade::getRemainAmount).sum();
-            if (sumRemains < amount) {
-                throw new IllegalStateException("차감 가능한 적립 잔량이 부족합니다.");
-            }
-            log.info(
-                    "차감 대상 조회 완료 userId={}, rowCount={}, requestedAmount={}",
-                    req.getUserId(),
-                    candidates.size(),
-                    amount);
-            List<EarnSlice> slices = new ArrayList<>();
-            long left = amount;
-            for (PointTrade earn : candidates) {
-                if (left <= 0) {
-                    break;
-                }
-                long take = Math.min(left, earn.getRemainAmount());
-                if (take <= 0) {
-                    continue;
-                }
-                slices.add(new EarnSlice(earn, take));
-                left -= take;
-            }
-            if (left > 0) {
-                throw new IllegalStateException("차감 가능한 적립 잔량이 부족합니다.");
-            }
-            for (EarnSlice s : slices) {
-                log.debug(
-                        "차감 배분 requestId={}, fromPointKey={}, amount={}",
-                        req.getRequestId(),
-                        s.trade().getPointKey(),
-                        s.takeAmount());
-            }
+            List<PointTrade> candidates = loadEarnCandidatesForUse(req.getUserId(), amount);
+            List<EarnSlice> slices = allocateEarnSlices(req, candidates, amount);
 
             String usePointKey = pointKeyGenerator.nextUniquePointKey();
-            PointTrade useTrade = buildUsePointTrade(usePointKey, req, amount);
-
-            try {
-                pointTradeRepository.insertPointTrade(useTrade);
-            } catch (DataIntegrityViolationException e) {
-                PointTrade stored =
-                        pointTradeRepository.selectPointTradeByRequestId(req.getRequestId()).orElse(null);
-                if (stored != null && stored.getTradeType() == TradeType.PO02) {
-                    log.info("기존 사용 거래 재사용 requestId={}, userId={}", req.getRequestId(), req.getUserId());
-                    return toUseResponse(stored, req);
-                }
-                throw e;
+            Optional<UsePointResponse> dup = insertUseTrade(req, usePointKey, amount);
+            if (dup.isPresent()) {
+                return dup.get();
             }
             log.info("사용 거래 저장 완료 requestId={}, pointKey={}, amount={}", req.getRequestId(), usePointKey, amount);
 
-            for (EarnSlice s : slices) {
-                PointTrade earn = s.trade();
-                earn.setRemainAmount(earn.getRemainAmount() - s.takeAmount());
-                pointTradeRepository.updateRemainAmount(earn);
-            }
+            applyEarnDeductions(slices);
+            insertUseDetails(req, usePointKey, slices);
 
-            for (EarnSlice s : slices) {
-                PointDetail detail = new PointDetail(
-                        req.getUserId(),
-                        usePointKey,
-                        TradeType.PO02,
-                        s.trade().getPointKey(),
-                        usePointKey,
-                        s.takeAmount(),
-                        req.getOrderNo());
-                pointDetailRepository.insertPointDetail(detail);
-            }
-
-            UserBalance balanceRow = userBalanceRepository
-                    .selectUserBalance(req.getUserId())
-                    .orElseThrow(() -> new IllegalStateException("잔고 정보가 없습니다."));
-            balanceRow.setAvailablePoint(balanceRow.getAvailablePoint() - amount);
-            userBalanceRepository.updateAvailablePoint(balanceRow);
-
-            UserBalance after = userBalanceRepository.selectUserBalance(req.getUserId()).orElseThrow();
+            UserBalance after = deductBalance(req.getUserId(), amount);
             log.info("잔고 반영 완료 userId={}, availablePoint={}", req.getUserId(), after.getAvailablePoint());
 
             log.info("사용 처리 완료 requestId={}, userId={}, pointKey={}", req.getRequestId(), req.getUserId(), usePointKey);
@@ -155,10 +85,116 @@ public class UsePointService {
                     e.getMessage(),
                     e);
             throw e;
+        } finally {
+            long elapsedMs = (System.nanoTime() - startedAt) / 1_000_000L;
+            log.info("사용 처리 소요 requestId={}, elapsedMs={}", req != null ? req.getRequestId() : null, elapsedMs);
         }
     }
 
     private record EarnSlice(PointTrade trade, long takeAmount) {}
+
+    private Optional<UsePointResponse> findIdempotentUseResponse(UsePointRequest req) {
+        Optional<PointTrade> existingByRequest = pointTradeRepository.selectPointTradeByRequestId(req.getRequestId());
+        if (existingByRequest.isEmpty()) {
+            return Optional.empty();
+        }
+        PointTrade existing = existingByRequest.get();
+        if (existing.getTradeType() == TradeType.PO02) {
+            log.info("기존 사용 거래 재사용 requestId={}, userId={}", req.getRequestId(), req.getUserId());
+            return Optional.of(toUseResponse(existing, req));
+        }
+        throw new IllegalArgumentException("requestId가 이미 다른 유형의 거래에 사용 중입니다.");
+    }
+
+    private void assertSufficientBalance(String userId, long amount) {
+        long available = userBalanceRepository.selectUserBalance(userId).map(UserBalance::getAvailablePoint).orElse(0L);
+        if (available < amount) {
+            throw new IllegalStateException("가용 포인트가 부족합니다.");
+        }
+    }
+
+    private List<PointTrade> loadEarnCandidatesForUse(String userId, long amount) {
+        List<PointTrade> candidates = pointTradeRepository.selectAvailableEarnTradesForUse(userId);
+        long sumRemains = candidates.stream().mapToLong(PointTrade::getRemainAmount).sum();
+        if (sumRemains < amount) {
+            throw new IllegalStateException("차감 가능한 적립 잔량이 부족합니다.");
+        }
+        log.info("차감 대상 조회 완료 userId={}, rowCount={}, requestedAmount={}", userId, candidates.size(), amount);
+        return candidates;
+    }
+
+    private List<EarnSlice> allocateEarnSlices(UsePointRequest req, List<PointTrade> candidates, long amount) {
+        List<EarnSlice> slices = new ArrayList<>();
+        long left = amount;
+        for (PointTrade earn : candidates) {
+            if (left <= 0) {
+                break;
+            }
+            long take = Math.min(left, earn.getRemainAmount());
+            if (take <= 0) {
+                continue;
+            }
+            slices.add(new EarnSlice(earn, take));
+            left -= take;
+        }
+        if (left > 0) {
+            throw new IllegalStateException("차감 가능한 적립 잔량이 부족합니다.");
+        }
+        for (EarnSlice s : slices) {
+            log.debug(
+                    "차감 배분 requestId={}, fromPointKey={}, amount={}",
+                    req.getRequestId(),
+                    s.trade().getPointKey(),
+                    s.takeAmount());
+        }
+        return slices;
+    }
+
+    private Optional<UsePointResponse> insertUseTrade(UsePointRequest req, String usePointKey, long amount) {
+        PointTrade useTrade = buildUsePointTrade(usePointKey, req, amount);
+        try {
+            pointTradeRepository.insertPointTrade(useTrade);
+            return Optional.empty();
+        } catch (DataIntegrityViolationException e) {
+            PointTrade stored = pointTradeRepository.selectPointTradeByRequestId(req.getRequestId()).orElse(null);
+            if (stored != null && stored.getTradeType() == TradeType.PO02) {
+                log.info("기존 사용 거래 재사용 requestId={}, userId={}", req.getRequestId(), req.getUserId());
+                return Optional.of(toUseResponse(stored, req));
+            }
+            throw e;
+        }
+    }
+
+    private void applyEarnDeductions(List<EarnSlice> slices) {
+        for (EarnSlice s : slices) {
+            PointTrade earn = s.trade();
+            earn.setRemainAmount(earn.getRemainAmount() - s.takeAmount());
+            pointTradeRepository.updateRemainAmount(earn);
+        }
+    }
+
+    private void insertUseDetails(UsePointRequest req, String usePointKey, List<EarnSlice> slices) {
+        for (EarnSlice s : slices) {
+            PointDetail detail = new PointDetail(
+                    req.getUserId(),
+                    usePointKey,
+                    TradeType.PO02,
+                    s.trade().getPointKey(),
+                    usePointKey,
+                    s.takeAmount(),
+                    req.getOrderNo());
+            pointDetailRepository.insertPointDetail(detail);
+        }
+    }
+
+    private UserBalance deductBalance(String userId, long amount) {
+        UserBalance balanceRow = userBalanceRepository
+                .selectUserBalance(userId)
+                .orElseThrow(() -> new IllegalStateException("잔고 정보가 없습니다."));
+        balanceRow.setAvailablePoint(balanceRow.getAvailablePoint() - amount);
+        userBalanceRepository.updateAvailablePoint(balanceRow);
+        return userBalanceRepository.selectUserBalance(userId).orElseThrow();
+    }
 
     private void validateUseBase(UsePointRequest req) {
         if (req.getRequestId() == null || req.getRequestId().isBlank()) {

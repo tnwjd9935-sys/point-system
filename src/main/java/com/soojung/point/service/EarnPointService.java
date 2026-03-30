@@ -34,6 +34,7 @@ public class EarnPointService {
     private final PointKeyGenerator pointKeyGenerator;
 
     public EarnPointResponse earn(EarnPointRequest req) {
+        final long startedAt = System.nanoTime();
         log.info("적립 요청 시작 requestId={}, userId={}, amount={}", req.getRequestId(), req.getUserId(), req.getAmount());
         try {
             validateBase(req);
@@ -108,6 +109,9 @@ public class EarnPointService {
                     e.getMessage(),
                     e);
             throw e;
+        } finally {
+            long elapsedMs = (System.nanoTime() - startedAt) / 1_000_000L;
+            log.info("적립 처리 소요 requestId={}, elapsedMs={}", req != null ? req.getRequestId() : null, elapsedMs);
         }
     }
 

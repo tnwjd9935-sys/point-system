@@ -29,6 +29,7 @@ public class CancelEarnPointService {
     private final PointKeyGenerator pointKeyGenerator;
 
     public CancelEarnPointResponse cancelEarn(CancelEarnPointRequest req) {
+        final long startedAt = System.nanoTime();
         log.info(
                 "적립취소 시작 requestId={}, originRequestId={}, userId={}",
                 req.getRequestId(),
@@ -131,6 +132,9 @@ public class CancelEarnPointService {
                     e.getMessage(),
                     e);
             throw e;
+        } finally {
+            long elapsedMs = (System.nanoTime() - startedAt) / 1_000_000L;
+            log.info("적립취소 처리 소요 requestId={}, elapsedMs={}", req != null ? req.getRequestId() : null, elapsedMs);
         }
     }
 
