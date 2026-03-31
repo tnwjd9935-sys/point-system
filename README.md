@@ -155,3 +155,4 @@ PO05의 `request_id`는 클라이언트 키와 분리해 내부 생성 값(`SYS-
 
 ## 산출물
 - DB 스키마는 `src/main/resources/schema.sql`에 있습니다.
+- ERD파일 `src/main/resources/point_erd.pdf`에 있습니다.
